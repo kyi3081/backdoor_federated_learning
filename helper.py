@@ -220,35 +220,30 @@ class Helper:
             # save_model
             logger.info("saving model")
             model_name = '{}/global_model_last.pt.tar'.format(self.params['folder_path'])
-            #model_name = "/storage/global_model_last.pt.tar"
             saved_dict = {'state_dict': model.state_dict(), 'epoch': epoch,
                           'lr': self.params['lr']}
-            #self.save_checkpoint(saved_dict, False, model_name)
-            torch.save(saved_dict, model_name)
+            self.save_checkpoint(saved_dict, False, model_name)
             if epoch in self.params['save_on_epochs']:
                 logger.info(f'Saving model on epoch {epoch}')
-                #self.save_checkpoint(saved_dict, False, filename=f'{model_name}.epoch_{epoch}')
-                torch.save(saved_dict, model_name)
-            #if val_loss < self.best_loss:
-            #    self.save_checkpoint(saved_dict, False, f'{model_name}.best')
-            #    self.best_loss = val_loss
+                self.save_checkpoint(saved_dict, False, filename=f'{model_name}.epoch_{epoch}')
+            if val_loss < self.best_loss:
+                self.save_checkpoint(saved_dict, False, f'{model_name}.best')
+                self.best_loss = val_loss
 
     # Save local model
     def save_local_model(self, model, epoch, val_loss, val_acc, adversary=False):
         if epoch not in self.params['save_on_epochs']:
             return
-        
-        logger.info("Saving local model at epoch: {}".format(epoch))
+
         if adversary:
             model_name = '{}/adversary_model_epoch_{}.pt.tar'.format(self.params['folder_path'], epoch)
-            #model_name = "/storage/adversary_model_epoch_{}.pt.tar".format(epoch)
+            logger.info("Saving adversary model at epoch: {}".format(epoch))
         else:
             model_name = '{}/benign_model_epoch_{}.pt.tar'.format(self.params['folder_path'], epoch)
-            #model_name = "/storage/benign_model_epoch_{}.pt.tar".format(epoch)
+            logger.info("Saving benign model at epoch: {}".format(epoch))
 
         saved_dict = {'state_dict': model.state_dict(), 'epoch': epoch, 'val_loss': val_loss, 'val_acc': val_acc}
-        torch.save(saved_dict, model_name)
-        #self.save_checkpoint(saved_dict, False, model_name)
+        self.save_checkpoint(saved_dict, False, model_name)
 
 
 
