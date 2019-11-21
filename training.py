@@ -3,29 +3,28 @@ import json
 import datetime
 import os
 import logging
+import math
+import yaml
+import time
+import random
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
-import math
-
 from torchvision import transforms
+# import visdom
 
 from image_helper import ImageHelper
 from text_helper import TextHelper
 from utils.utils import dict_html
+from utils.text_load import *
+
 
 logger = logging.getLogger("logger")
-# logger.setLevel("ERROR")
-import yaml
-import time
-import visdom
-import numpy as np
-
-vis = visdom.Visdom()
-import random
-from utils.text_load import *
+#vis = visdom.Visdom()
 
 criterion = torch.nn.CrossEntropyLoss()
 
@@ -33,7 +32,7 @@ criterion = torch.nn.CrossEntropyLoss()
 # torch.cuda.manual_seed(1)
 # random.seed(1)
 
-def train(helper, epoch, train_data_sets, local_model, target_model, is_poison, last_weight_accumulator=None):
+def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
 
     ### Accumulate weight updates for all participants.
     # Initialize the weight accumulator
@@ -300,16 +299,16 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison, 
                         f'MODEL {adv_model_id}. P-norm is {helper.model_global_norm(model):.4f}. '
                         f'Distance to the global model: {distance:.4f}. '
                         f'Dataset size: {train_data.size(0)}')
-                    vis.line(Y=np.array([distance]), X=np.array([epoch]),
-                             win=f"global_dist_{helper.params['current_time']}",
-                             env=helper.params['environment_name'],
-                             name=f'Model_{adv_model_id}',
-                             update='append' if vis.win_exists(
-                                 f"global_dist_{helper.params['current_time']}",
-                                 env=helper.params['environment_name']) else None,
-                             opts=dict(showlegend=True,
-                                       title=f"Distance to Global {helper.params['current_time']}",
-                                       width=700, height=400))
+                    # vis.line(Y=np.array([distance]), X=np.array([epoch]),
+                    #          win=f"global_dist_{helper.params['current_time']}",
+                    #          env=helper.params['environment_name'],
+                    #          name=f'Model_{adv_model_id}',
+                    #          update='append' if vis.win_exists(
+                    #              f"global_dist_{helper.params['current_time']}",
+                    #              env=helper.params['environment_name']) else None,
+                    #          opts=dict(showlegend=True,
+                    #                    title=f"Distance to Global {helper.params['current_time']}",
+                    #                    width=700, height=400))
 
             for key, value in model.state_dict().items():
                 #### don't scale tied weights:
@@ -409,17 +408,17 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison, 
                     f'MODEL {model_id}. P-norm is {helper.model_global_norm(model):.4f}. '
                     f'Distance to the global model: {distance_to_global_model:.4f}. '
                     f'Dataset size: {train_data.size(0)}')
-                vis.line(Y=np.array([distance_to_global_model]), X=np.array([epoch]),
-                         win=f"global_dist_{helper.params['current_time']}",
-                         env=helper.params['environment_name'],
-                         name=f'Model_{model_id}',
-                         update='append' if
-                         vis.win_exists(f"global_dist_{helper.params['current_time']}",
-                                                           env=helper.params[
-                                                               'environment_name']) else None,
-                         opts=dict(showlegend=True,
-                                   title=f"Distance to Global {helper.params['current_time']}",
-                                   width=700, height=400))
+                # vis.line(Y=np.array([distance_to_global_model]), X=np.array([epoch]),
+                #          win=f"global_dist_{helper.params['current_time']}",
+                #          env=helper.params['environment_name'],
+                #          name=f'Model_{model_id}',
+                #          update='append' if
+                #          vis.win_exists(f"global_dist_{helper.params['current_time']}",
+                #                                            env=helper.params[
+                #                                                'environment_name']) else None,
+                #          opts=dict(showlegend=True,
+                #                    title=f"Distance to Global {helper.params['current_time']}",
+                #                    width=700, height=400))
 
         for name, data in model.state_dict().items():
             #### don't scale tied weights:
@@ -484,12 +483,12 @@ def test(helper, epoch, data_source,
                 logger.info(expected_sentence)
                 logger.info(predicted_sentence)
 
-                vis.text(f"<h2>Epoch: {epoch}_{helper.params['current_time']}</h2>"
-                         f"<p>{expected_sentence.replace('<','&lt;').replace('>', '&gt;')}"
-                         f"</p><p>{predicted_sentence.replace('<','&lt;').replace('>', '&gt;')}</p>"
-                         f"<p>Accuracy: {score} %",
-                         win=f"text_examples_{helper.params['current_time']}",
-                         env=helper.params['environment_name'])
+                # vis.text(f"<h2>Epoch: {epoch}_{helper.params['current_time']}</h2>"
+                #          f"<p>{expected_sentence.replace('<','&lt;').replace('>', '&gt;')}"
+                #          f"</p><p>{predicted_sentence.replace('<','&lt;').replace('>', '&gt;')}</p>"
+                #          f"<p>Accuracy: {score} %",
+                #          win=f"text_examples_{helper.params['current_time']}",
+                #          env=helper.params['environment_name'])
         else:
             output = model(data)
             total_loss += nn.functional.cross_entropy(output, targets,
@@ -626,9 +625,9 @@ if __name__ == '__main__':
         helper.params['adversary_list'] = list()
 
     best_loss = float('inf')
-    vis.text(text=dict_html(helper.params, current_time=helper.params["current_time"]),
-             env=helper.params['environment_name'], opts=dict(width=300, height=400))
-    logger.info(f"We use following environment for graphs:  {helper.params['environment_name']}")
+    # vis.text(text=dict_html(helper.params, current_time=helper.params["current_time"]),
+    #          env=helper.params['environment_name'], opts=dict(width=300, height=400))
+    # logger.info(f"We use following environment for graphs:  {helper.params['environment_name']}")
     participant_ids = range(len(helper.train_data))
     mean_acc = list()
 
@@ -680,7 +679,7 @@ if __name__ == '__main__':
                                    train_data_sets=[(pos, helper.train_data[pos]) for pos in
                                                     subset_data_chunks],
                                    local_model=helper.local_model, target_model=helper.target_model,
-                                   is_poison=helper.params['is_poison'], last_weight_accumulator=weight_accumulator)
+                                   is_poison=helper.params['is_poison'])
         logger.info(f'time spent on training: {time.time() - t}')
         # Average the models
         helper.average_shrink_models(target_model=helper.target_model,
@@ -715,5 +714,5 @@ if __name__ == '__main__':
                 results['mean_poison'] = np.mean(mean_acc)
             f.write(json.dumps(results) + '\n')
 
-    vis.save([helper.params['environment_name']])
+    #vis.save([helper.params['environment_name']])
 
