@@ -84,7 +84,8 @@ class ImageHelper(Helper):
     def poison_dataset(self):
         # Remove poisoned images from range_no_id
         range_no_id = list(range(50000))
-        range_no_id = range_no_id - list(set(self.params['poison_images'] + self.params['poison_images_test']))
+        poisoned_ids = list(set(self.params['poison_images'] + self.params['poison_images_test']))
+        range_no_id = [x for x in range_no_id if x not in poisoned_ids]
 
         # Create the sampler indices of non-poisoned images
         indices = list()
