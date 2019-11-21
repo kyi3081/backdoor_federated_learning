@@ -15,7 +15,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
 from torchvision import transforms
-# import visdom
 
 from image_helper import ImageHelper
 from text_helper import TextHelper
@@ -24,7 +23,6 @@ from utils.text_load import *
 
 
 logger = logging.getLogger("logger")
-#vis = visdom.Visdom()
 
 criterion = torch.nn.CrossEntropyLoss()
 
@@ -34,8 +32,7 @@ criterion = torch.nn.CrossEntropyLoss()
 
 def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
 
-    ### Accumulate weight updates for all participants.
-    # Initialize the weight accumulator
+    # weight_accumulator accumulates weight updates for all participants
     weight_accumulator = dict()
     for name, data in target_model.state_dict().items():
         #### don't scale tied weights:
@@ -43,21 +40,23 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
             continue
         weight_accumulator[name] = torch.zeros_like(data)
 
-    ### This is for calculating distances - which will be used as anomaly detection metric
+    # This is for calculating distances - which will be used as anomaly detection metric
     target_params_variables = dict()
     for name, param in target_model.named_parameters():
         target_params_variables[name] = target_model.state_dict()[name].clone().detach().requires_grad_(False)
-    current_number_of_adversaries = 0
-    for model_id, _ in train_data_sets:
-        if model_id == -1 or model_id in helper.params['adversary_list']:
-            current_number_of_adversaries += 1
+
+    adversay_ids = [x[0] for x in train_data_sets if x[0] in helper.params['adversary_list'] + [-1]]
+    current_number_of_adversaries = len(adversay_ids)
+    # current_number_of_adversaries = 0
+    # for model_id, _ in train_data_sets:
+    #     if model_id == -1 or model_id in helper.params['adversary_list']:
+    #         current_number_of_adversaries += 1
     logger.info(f'There are {current_number_of_adversaries} adversaries in the training.')
 
     ### Train the selected models
     for model_id in range(helper.params['no_models']):
         model = local_model
-        ## Synchronize LR and models
-        # Copy parameters from the global model
+        # Copy parameters from the global model and initialize the optimizer
         model.copy_params(target_model.state_dict())
         optimizer = torch.optim.SGD(model.parameters(), lr=helper.params['lr'],
                                     momentum=helper.params['momentum'],
@@ -161,49 +160,6 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
 
                         loss = helper.params['alpha_loss'] * class_loss + (1 - helper.params['alpha_loss']) * distance_loss
 
-                        ## visualize
-                        if helper.params['report_poison_loss'] and batch_id % 2 == 0:
-                            loss_p, acc_p = test_poison(helper=helper, epoch=internal_epoch,
-                                                        data_source=helper.test_data_poison,
-                                                        model=model, is_poison=True,
-                                                        visualize=False)
-
-                            model.train_vis(vis=vis, epoch=internal_epoch,
-                                            data_len=len(data_iterator),
-                                            batch=batch_id,
-                                            loss=class_loss.data,
-                                            eid=helper.params['environment_name'],
-                                            name='Classification Loss', win='poison')
-
-                            model.train_vis(vis=vis, epoch=internal_epoch,
-                                            data_len=len(data_iterator),
-                                            batch=batch_id,
-                                            loss=all_model_distance,
-                                            eid=helper.params['environment_name'],
-                                            name='All Model Distance', win='poison')
-
-                            model.train_vis(vis=vis, epoch=internal_epoch,
-                                            data_len = len(data_iterator),
-                                            batch = batch_id,
-                                            loss = acc_p / 100.0,
-                                            eid = helper.params['environment_name'], name='Accuracy',
-                                            win = 'poison')
-
-                            model.train_vis(vis=vis, epoch=internal_epoch,
-                                            data_len=len(data_iterator),
-                                            batch=batch_id,
-                                            loss=acc / 100.0,
-                                            eid=helper.params['environment_name'], name='Main Accuracy',
-                                            win='poison')
-
-
-                            model.train_vis(vis=vis, epoch=internal_epoch,
-                                            data_len=len(data_iterator),
-                                            batch=batch_id, loss=distance_loss.data,
-                                            eid=helper.params['environment_name'], name='Distance Loss',
-                                            win='poison')
-
-
                         loss.backward()
 
                         if helper.params['diff_privacy']:
@@ -299,16 +255,6 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                         f'MODEL {adv_model_id}. P-norm is {helper.model_global_norm(model):.4f}. '
                         f'Distance to the global model: {distance:.4f}. '
                         f'Dataset size: {train_data.size(0)}')
-                    # vis.line(Y=np.array([distance]), X=np.array([epoch]),
-                    #          win=f"global_dist_{helper.params['current_time']}",
-                    #          env=helper.params['environment_name'],
-                    #          name=f'Model_{adv_model_id}',
-                    #          update='append' if vis.win_exists(
-                    #              f"global_dist_{helper.params['current_time']}",
-                    #              env=helper.params['environment_name']) else None,
-                    #          opts=dict(showlegend=True,
-                    #                    title=f"Distance to Global {helper.params['current_time']}",
-                    #                    width=700, height=400))
 
             for key, value in model.state_dict().items():
                 #### don't scale tied weights:
@@ -408,17 +354,6 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                     f'MODEL {model_id}. P-norm is {helper.model_global_norm(model):.4f}. '
                     f'Distance to the global model: {distance_to_global_model:.4f}. '
                     f'Dataset size: {train_data.size(0)}')
-                # vis.line(Y=np.array([distance_to_global_model]), X=np.array([epoch]),
-                #          win=f"global_dist_{helper.params['current_time']}",
-                #          env=helper.params['environment_name'],
-                #          name=f'Model_{model_id}',
-                #          update='append' if
-                #          vis.win_exists(f"global_dist_{helper.params['current_time']}",
-                #                                            env=helper.params[
-                #                                                'environment_name']) else None,
-                #          opts=dict(showlegend=True,
-                #                    title=f"Distance to Global {helper.params['current_time']}",
-                #                    width=700, height=400))
 
         for name, data in model.state_dict().items():
             #### don't scale tied weights:
@@ -483,12 +418,6 @@ def test(helper, epoch, data_source,
                 logger.info(expected_sentence)
                 logger.info(predicted_sentence)
 
-                # vis.text(f"<h2>Epoch: {epoch}_{helper.params['current_time']}</h2>"
-                #          f"<p>{expected_sentence.replace('<','&lt;').replace('>', '&gt;')}"
-                #          f"</p><p>{predicted_sentence.replace('<','&lt;').replace('>', '&gt;')}</p>"
-                #          f"<p>Accuracy: {score} %",
-                #          win=f"text_examples_{helper.params['current_time']}",
-                #          env=helper.params['environment_name'])
         else:
             output = model(data)
             total_loss += nn.functional.cross_entropy(output, targets,
@@ -513,10 +442,6 @@ def test(helper, epoch, data_source,
                     'Accuracy: {}/{} ({:.4f}%)'.format(model.name, is_poison, epoch,
                                                        total_l, correct, dataset_size,
                                                        acc))
-
-    if visualize:
-        model.visualize(vis, epoch, acc, total_l if helper.params['report_test_loss'] else None,
-                        eid=helper.params['environment_name'], is_poisoned=is_poison)
     model.train()
     return (total_l, acc)
 
@@ -584,9 +509,7 @@ def test_poison(helper, epoch, data_source,
                 'Accuracy: {}/{} ({:.0f}%)'.format(model.name, is_poison, epoch,
                                                    total_l, correct, dataset_size,
                                                    acc))
-    if visualize:
-        model.visualize(vis, epoch, acc, total_l if helper.params['report_test_loss'] else None,
-                        eid=helper.params['environment_name'], is_poisoned=is_poison)
+
     model.train()
     return total_l, acc
 
@@ -625,9 +548,6 @@ if __name__ == '__main__':
         helper.params['adversary_list'] = list()
 
     best_loss = float('inf')
-    # vis.text(text=dict_html(helper.params, current_time=helper.params["current_time"]),
-    #          env=helper.params['environment_name'], opts=dict(width=300, height=400))
-    # logger.info(f"We use following environment for graphs:  {helper.params['environment_name']}")
     participant_ids = range(len(helper.train_data))
     mean_acc = list()
 
@@ -705,14 +625,10 @@ if __name__ == '__main__':
     if helper.params['is_poison']:
         logger.info(f'MEAN_ACCURACY: {np.mean(mean_acc)}')
     logger.info('Saving all the graphs.')
-    logger.info(f"This run has a label: {helper.params['current_time']}. "
-                f"Visdom environment: {helper.params['environment_name']}")
+    logger.info(f"This run has a label: {helper.params['current_time']}. ")
 
     if helper.params.get('results_json', False):
         with open(helper.params['results_json'], 'a') as f:
             if len(mean_acc):
                 results['mean_poison'] = np.mean(mean_acc)
             f.write(json.dumps(results) + '\n')
-
-    #vis.save([helper.params['environment_name']])
-
