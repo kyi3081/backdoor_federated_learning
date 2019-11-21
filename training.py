@@ -32,6 +32,7 @@ criterion = torch.nn.CrossEntropyLoss()
 
 def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
 
+    logger.info("########Start training for global epoch: {}########".format(epoch))
     # weight_accumulator accumulates weight updates for all participants
     weight_accumulator = dict()
     for name, data in target_model.state_dict().items():
@@ -47,11 +48,7 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
 
     adversay_ids = [x[0] for x in train_data_sets if x[0] in helper.params['adversary_list'] + [-1]]
     current_number_of_adversaries = len(adversay_ids)
-    # current_number_of_adversaries = 0
-    # for model_id, _ in train_data_sets:
-    #     if model_id == -1 or model_id in helper.params['adversary_list']:
-    #         current_number_of_adversaries += 1
-    logger.info(f'There are {current_number_of_adversaries} adversaries in the training.')
+    logger.info(f'There are {current_number_of_adversaries} adversaries in global epoch: {epoch}')
 
     ### Train the selected models
     for model_id in range(helper.params['no_models']):
@@ -73,7 +70,6 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
         else:
             _, (current_data_model, train_data) = train_data_sets[model_id]
         batch_size = helper.params['batch_size']
-        ### For a 'poison_epoch' we perform single shot poisoning
 
         if current_data_model == -1:
             # The participant got compromised and is out of the training.
@@ -95,7 +91,6 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
             _, acc_initial = test(helper=helper, epoch=epoch, data_source=helper.test_data,
                              model=model, is_poison=False, visualize=False)
 
-            logger.info("Test accuracy on poisoned dataset at epoch {}, {}".format(epoch, acc_p))
             poison_lr = helper.params['poison_lr']
             # Lower the adversary's learning rate if acc_p is big enough
             if not helper.params['baseline']:
@@ -214,7 +209,7 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
 
             ### Adversary wants to scale his weights. Baseline model doesn't do this
             if not helper.params['baseline']:
-                ### We scale data according to formula: L = 100*X-99*G = G + scale_weights*(X-G).
+                ### We scale data according to formula: L = G + scale_weights*(X-G).
                 clip_rate = (helper.params['scale_weights'] / current_number_of_adversaries)
                 logger.info(f"Scaling by  {clip_rate}")
                 for key, value in model.state_dict().items():
@@ -271,7 +266,7 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
             epoch_loss, epoch_acc = test(helper=helper, epoch=epoch, data_source=helper.test_data,
                              model=model, is_poison=True, visualize=False)
             # Save the adversary model
-            helper.save_local_model(model=model, epoch=epoch, val_loss=epoch_loss, val_acc=epoch_acc, adversary=True)
+            helper.save_local_model(model_id=current_data_model,model=model, epoch=epoch, val_loss=epoch_loss, val_acc=epoch_acc, adversary=True)
 
 
         #### Train a benign model
@@ -345,7 +340,7 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
             epoch_loss, epoch_acc = test(helper=helper, epoch=epoch, data_source=helper.test_data,
                                          model=model, is_poison=False, visualize=False)
             # Save benign model
-            helper.save_local_model(model=model, epoch=epoch, val_loss=epoch_loss, val_acc=epoch_acc, adversary=False)
+            helper.save_local_model(model_id=current_data_model, model=model, epoch=epoch, val_loss=epoch_loss, val_acc=epoch_acc, adversary=False)
 
             if helper.params['track_distance'] and model_id < 10:
                 # we can calculate distance to this model now.
@@ -624,7 +619,6 @@ if __name__ == '__main__':
 
     if helper.params['is_poison']:
         logger.info(f'MEAN_ACCURACY: {np.mean(mean_acc)}')
-    logger.info('Saving all the graphs.')
     logger.info(f"This run has a label: {helper.params['current_time']}. ")
 
     if helper.params.get('results_json', False):

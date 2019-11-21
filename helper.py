@@ -231,7 +231,7 @@ class Helper:
                 self.best_loss = val_loss
 
     # Save local model
-    def save_local_model(self, model, epoch, val_loss, val_acc, adversary=False):
+    def save_local_model(self, model_id, model, epoch, val_loss, val_acc, adversary=False):
         if epoch not in self.params['save_on_epochs']:
             return
 
@@ -239,7 +239,7 @@ class Helper:
             model_name = '{}/adversary_model_epoch_{}.pt.tar'.format(self.params['folder_path'], epoch)
             logger.info("Saving adversary model at epoch: {}".format(epoch))
         else:
-            model_name = '{}/benign_model_epoch_{}.pt.tar'.format(self.params['folder_path'], epoch)
+            model_name = '{}/benign_model_{}_epoch_{}.pt.tar'.format(model_id, self.params['folder_path'], epoch)
             logger.info("Saving benign model at epoch: {}".format(epoch))
 
         saved_dict = {'state_dict': model.state_dict(), 'epoch': epoch, 'val_loss': val_loss, 'val_acc': val_acc}
