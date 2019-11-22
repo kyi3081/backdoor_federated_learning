@@ -1,0 +1,83 @@
+---
+type: image
+dataset: fmnist
+
+## Epochs
+epochs: 1  # global epochs
+retrain_no_times: 2  # local epochs for benign models
+retrain_poison: 2 # local epochs for adversary
+poison_epochs: [1]  # epochs with adversaries
+
+## Model saving
+save_model: true
+save_on_epochs: [1]
+
+## Total participants & sampling
+number_of_total_participants: 20
+sampling_dirichlet: false
+dirichlet_alpha: 0.9
+eta: 1
+
+## Poisoning
+is_poison: true # flag to activate backdoor FL
+number_of_adversaries: 1
+poisoning_per_batch: 1  # poisoned images per batch
+poisoned_number: 2 # used in utils.py
+poison_label_swap: 2  # false label of poisoned images
+baseline: false  # flag to scale adverersaries' weight updates
+random_compromise: false  # whether to sample models randomly each epoch
+noise_level: 0.01  # level of noise added to poisoned images
+# file names of the images
+poison_type: wall
+# manually chosen images for tests
+poison_images_test:
+  - 330
+  - 568
+  - 3934
+  - 12336
+  - 30560
+poison_images:
+  - 30696
+  - 33105
+  - 33615
+  - 33907
+  - 36848
+  - 40713
+  - 41706
+
+## Training
+no_models: 5  # models chosen each global epoch
+batch_size: 64
+test_batch_size: 20  # batch used for testing adversary model in training
+size_of_secret_dataset: 10
+lr: 0.1
+momentum: 0.9
+decay: 0.0005
+
+# Adversary training
+scale_weights: 100  # scale weights for final submitted adversary weight updates
+poison_lr: 0.05
+poison_momentum: 0.9
+poison_decay: 0.005
+poison_step_lr: true
+clamp_value: 1.0
+alpha_loss: 1.0  # weight for class_loss compared to distance_loss in adversary training loss
+
+## Minor configs for reporting/tracking
+resumed_model:
+environment_name: ppdl_experiment
+report_train_loss: false
+report_test_loss: false
+report_poison_loss: false
+track_distance: false
+track_clusters: false
+log_interval: 10
+
+results_json: false 
+
+s_norm: 1000000
+diff_privacy: false
+
+fake_participants_load: false
+fake_participants_file: data/reddit/updates_cifar.pt.tar
+fake_participants_save: false

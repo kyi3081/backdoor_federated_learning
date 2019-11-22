@@ -7,6 +7,7 @@ import math
 import yaml
 import time
 import random
+import pdb
 
 import numpy as np
 import torch
@@ -84,6 +85,7 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
             poisoned_data = helper.poisoned_data_for_train
 
             # Get accuracy on poisoned test dataset
+            # pdb.set_trace()
             _, acc_p = test_poison(helper=helper, epoch=epoch,
                                    data_source=helper.test_data_poison,
                                    model=model, is_poison=True, visualize=False)
@@ -482,6 +484,7 @@ def test_poison(helper, epoch, data_source,
 
     # Testing on image data
     else:
+        # pdb.set_trace()
         data_iterator = data_source
         dataset_size = 1000
         for batch_id, batch in enumerate(data_iterator):
@@ -608,6 +611,8 @@ if __name__ == '__main__':
                                                     visualize=True)
             mean_acc.append(epoch_acc_p)
             results['poison'].append({'epoch': epoch, 'acc': epoch_acc_p})
+            # pdb.set_trace()
+            logger.info('epoch {}, poison acc {}. '.format(epoch, epoch_acc_p))
 
         epoch_loss, epoch_acc = test(helper=helper, epoch=epoch, data_source=helper.test_data,
                                      model=helper.target_model, is_poison=False, visualize=True)

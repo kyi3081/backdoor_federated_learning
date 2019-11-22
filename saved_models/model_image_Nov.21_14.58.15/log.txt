@@ -1,0 +1,27 @@
+current path: saved_models/model_image_Nov.21_14.58.15
+Loading data
+Poisoned following participants: 1
+########Start training for global epoch: 1########
+There are 1 adversaries in global epoch: 1
+poison_now
+___Test Local_ResNet_18 poisoned: True, epoch: 1: Average loss: 2.3244, Accuracy: 0.0/1000 (0%)
+___Test Local_ResNet_18 poisoned: False, epoch: 1: Average loss: 2.3033, Accuracy: 1000/10000 (10.0000%)
+Current lr of adversary: [0.05]
+Current epoch: 1 out of 2 , lr: [0.05]
+___Test Local_ResNet_18 poisoned: False, epoch: 1: Average loss: 2.3039, Accuracy: 1007/10000 (10.0700%)
+___Test Local_ResNet_18 poisoned: True, epoch: 1: Average loss: 2.3885, Accuracy: 0.0/1000 (0%)
+Distance: 2.453456200273434
+Current lr of adversary: [0.005000000000000001]
+Current epoch: 2 out of 2 , lr: [0.005000000000000001]
+___Test Local_ResNet_18 poisoned: False, epoch: 1: Average loss: 2.2674, Accuracy: 1484/10000 (14.8400%)
+___Test Local_ResNet_18 poisoned: True, epoch: 2: Average loss: 2.5361, Accuracy: 0.0/1000 (0%)
+Distance: 2.5915840941232915
+Global model norm: 40.19763340602668.
+Norm before scaling: 40.22974336205194. Distance: 2.5915840941232915
+Scaling by  100.0
+Scaled Norm after poisoning: 261.4680609080199, distance: 259.1584186120528
+Total norm for 1 adversaries is: 261.4680609080199. distance: 259.1584186120528
+___Test Local_ResNet_18 poisoned: True, epoch: 1: Average loss: nan, Accuracy: 1000/10000 (10.0000%)
+Saving adversary model at epoch: 1
+___Test Local_ResNet_18 poisoned: False, epoch: 1: Average loss: 1.9424, Accuracy: 2380/10000 (23.8000%)
+Saving benign model at epoch: 1

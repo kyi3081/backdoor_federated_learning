@@ -1,0 +1,41 @@
+current path: saved_models/model_fmnist_Nov.21_16.20.02
+Loading data
+Poisoned following participants: 1
+########Start training for global epoch: 1########
+There are 1 adversaries in global epoch: 1
+poison_now
+___Test Local poisoned: True, epoch: 1: Average loss: 2.2426, Accuracy: 203.0/1000 (20%)
+___Test Local poisoned: False, epoch: 1: Average loss: 2.3019, Accuracy: 741/10000 (7.4100%)
+Current lr of adversary: [0.001]
+Current epoch: 1 out of 2 , lr: [0.001]
+___Test Local poisoned: False, epoch: 1: Average loss: 2.2348, Accuracy: 3106/10000 (31.0600%)
+___Test Local poisoned: True, epoch: 1: Average loss: 2.2009, Accuracy: 384.0/1000 (38%)
+Distance: 0.1572306259293614
+Current lr of adversary: [0.0001]
+Current epoch: 2 out of 2 , lr: [0.0001]
+___Test Local poisoned: False, epoch: 1: Average loss: 2.1392, Accuracy: 3936/10000 (39.3600%)
+___Test Local poisoned: True, epoch: 2: Average loss: 2.1560, Accuracy: 202.0/1000 (20%)
+Distance: 0.17631053711773173
+Global model norm: 6.278687519033729.
+Norm before scaling: 6.279934417965311. Distance: 0.17631053711773173
+Scaling by  100.0
+Scaled Norm after poisoning: 18.674400816347745, distance: 17.631053128608855
+Total norm for 1 adversaries is: 18.674400816347745. distance: 17.631053128608855
+___Test Local poisoned: True, epoch: 1: Average loss: nan, Accuracy: 1000/10000 (10.0000%)
+Saving adversary model at epoch: 1
+___Test Local poisoned: False, epoch: 1: Average loss: 0.7987, Accuracy: 7158/10000 (71.5800%)
+Saving benign model at epoch: 1
+___Test Local poisoned: False, epoch: 1: Average loss: 0.6405, Accuracy: 7569/10000 (75.6900%)
+Saving benign model at epoch: 1
+___Test Local poisoned: False, epoch: 1: Average loss: 0.6610, Accuracy: 7602/10000 (76.0200%)
+Saving benign model at epoch: 1
+___Test Local poisoned: False, epoch: 1: Average loss: 0.6715, Accuracy: 7529/10000 (75.2900%)
+Saving benign model at epoch: 1
+time spent on training: 31.315247535705566
+___Test Target poisoned: True, epoch: 1: Average loss: nan, Accuracy: 0.0/1000 (0%)
+___Test Target poisoned: False, epoch: 1: Average loss: nan, Accuracy: 1000/10000 (10.0000%)
+saving model
+Saving model on epoch 1
+Done in 34.59783577919006 sec.
+MEAN_ACCURACY: 0.0
+This run has a label: Nov.21_16.20.02. 

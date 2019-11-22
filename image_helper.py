@@ -1,5 +1,6 @@
 from collections import defaultdict
 
+import pdb
 import torch
 import torch.utils.data
 
@@ -10,6 +11,7 @@ from torchvision import datasets, transforms
 import numpy as np
 
 from models.resnet import ResNet18
+from models.fmnist_models import FMNIST_CNN
 from models.word_model import RNNModel
 from utils.text_load import *
 from utils.utils import SubsetSampler
@@ -26,24 +28,44 @@ class ImageHelper(Helper):
         return
 
     def create_model(self):
-        local_model = ResNet18(name='Local',
-                    created_time=self.params['current_time'])
-        local_model.cuda()
-        target_model = ResNet18(name='Target',
+        if self.params['dataset'] == 'cifar':
+            local_model = ResNet18(name='Local',
                         created_time=self.params['current_time'])
-        target_model.cuda()
-        if self.params['resumed_model']:
-            loaded_params = torch.load(f"saved_models/{self.params['resumed_model']}")
-            target_model.load_state_dict(loaded_params['state_dict'])
-            self.start_epoch = loaded_params['epoch']
-            self.params['lr'] = loaded_params.get('lr', self.params['lr'])
-            logger.info(f"Loaded parameters from saved model: LR is"
-                        f" {self.params['lr']} and current epoch is {self.start_epoch}")
-        else:
-            self.start_epoch = 1
+            local_model.cuda()
+            target_model = ResNet18(name='Target',
+                            created_time=self.params['current_time'])
+            target_model.cuda()
+            if self.params['resumed_model']:
+                loaded_params = torch.load(f"saved_models/{self.params['resumed_model']}")
+                target_model.load_state_dict(loaded_params['state_dict'])
+                self.start_epoch = loaded_params['epoch']
+                self.params['lr'] = loaded_params.get('lr', self.params['lr'])
+                logger.info(f"Loaded parameters from saved model: LR is"
+                            f" {self.params['lr']} and current epoch is {self.start_epoch}")
+            else:
+                self.start_epoch = 1
+
+
+        elif self.params['dataset'] == 'fmnist':
+            # pdb.set_trace()
+            local_model = FMNIST_CNN(name='Local', created_time=self.params['current_time'])
+            local_model.cuda()
+            target_model = FMNIST_CNN(name='Target',
+                            created_time=self.params['current_time'])
+            target_model.cuda()
+            if self.params['resumed_model']:
+                loaded_params = torch.load(f"saved_models/{self.params['resumed_model']}")
+                target_model.load_state_dict(loaded_params['state_dict'])
+                self.start_epoch = loaded_params['epoch']
+                self.params['lr'] = loaded_params.get('lr', self.params['lr'])
+                logger.info(f"Loaded parameters from saved model: LR is"
+                            f" {self.params['lr']} and current epoch is {self.start_epoch}")
+            else:
+                self.start_epoch = 1
 
         self.local_model = local_model
         self.target_model = target_model
+        print(self.local_model)
 
 
     def sample_dirichlet_train_data(self, no_participants, alpha=0.9):
@@ -110,23 +132,35 @@ class ImageHelper(Helper):
     def load_data(self):
         logger.info('Loading data')
 
+        ## Choose dataset
+        if self.params["dataset"] == "cifar":
         # Transform training and test data
-        transform_train = transforms.Compose([
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-        ])
+            transform_train = transforms.Compose([
+                transforms.RandomCrop(32, padding=4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            ])
 
-        transform_test = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-        ])
+            transform_test = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            ])
 
-        self.train_dataset = datasets.CIFAR10('./data', train=True, download=True,
-                                         transform=transform_train)
 
-        self.test_dataset = datasets.CIFAR10('./data', train=False, transform=transform_test)
+            self.train_dataset = datasets.CIFAR10('./data', train=True, download=True,
+                                             transform=transform_train)
+
+            self.test_dataset = datasets.CIFAR10('./data', train=False, transform=transform_test)
+
+        elif self.params["dataset"] == "fmnist":
+            # transform = transforms.Compose([transforms.ToTensor(),
+            #     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            # ])
+            transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.5], [0.5])])
+            self.train_dataset = datasets.FashionMNIST('F_MNIST_data/', download=True, train=True, transform=transform)
+            self.test_dataset = datasets.FashionMNIST('F_MNIST_data/', download=True, train=False, transform=transform)
+
 
         # If sampling training dataset of PCPs based on Dirichlet distribution
         if self.params['sampling_dirichlet']:
@@ -146,6 +180,9 @@ class ImageHelper(Helper):
         self.test_data = self.get_test()
         self.poisoned_data_for_train = self.poison_dataset()
         self.test_data_poison = self.poison_test_dataset()
+        # pdb.set_trace()
+        # for x, y in enumerate(train_loaders[0][1]):
+        #     print(y[0].shape)
 
 
     # Prepare training data based on Dirichlet distribution
@@ -158,6 +195,7 @@ class ImageHelper(Helper):
 
     # Prepare equally split training data
     def get_train_old(self, all_range, model_no):
+        # pdb.set_trace()
         data_len = int(len(self.train_dataset) / self.params['number_of_total_participants'])
         sub_indices = all_range[model_no * data_len: (model_no + 1) * data_len]
         train_loader = torch.utils.data.DataLoader(self.train_dataset,
@@ -197,4 +235,3 @@ class ImageHelper(Helper):
             data.requires_grad_(False)
             target.requires_grad_(False)
         return data, target
-

@@ -1,0 +1,6 @@
+current path: saved_models/model_fmnist_Nov.21_15.47.04
+Loading data
+Poisoned following participants: 1
+########Start training for global epoch: 1########
+There are 1 adversaries in global epoch: 1
+poison_now

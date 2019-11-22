@@ -2,6 +2,7 @@ from shutil import copyfile
 
 import math
 import torch
+import pdb
 
 from torch.autograd import Variable
 import logging
@@ -26,7 +27,7 @@ class Helper:
         self.params = params
         self.name = name
         self.best_loss = math.inf
-        self.folder_path = f'saved_models/model_{self.name}_{current_time}'
+        self.folder_path = 'saved_models/model_{}_{}'.format(params['dataset'], current_time)
         try:
             os.mkdir(self.folder_path)
         except FileExistsError:
@@ -235,11 +236,14 @@ class Helper:
         if epoch not in self.params['save_on_epochs']:
             return
 
+        # pdb.set_trace()
+        if not os.path.exists(self.params['folder_path']):
+            os.mkdir(self.params['folder_path'])
         if adversary:
             model_name = '{}/adversary_model_epoch_{}.pt.tar'.format(self.params['folder_path'], epoch)
             logger.info("Saving adversary model at epoch: {}".format(epoch))
         else:
-            model_name = '{}/benign_model_{}_epoch_{}.pt.tar'.format(model_id, self.params['folder_path'], epoch)
+            model_name = '{}/benign_model_{}_epoch_{}.pt.tar'.format(self.params['folder_path'], model_id, epoch)
             logger.info("Saving benign model at epoch: {}".format(epoch))
 
         saved_dict = {'state_dict': model.state_dict(), 'epoch': epoch, 'val_loss': val_loss, 'val_acc': val_acc}
@@ -317,4 +321,3 @@ class Helper:
                 Variable(torch.zeros(1)).cuda() if cuda else
                 Variable(torch.zeros(1))
             )
-

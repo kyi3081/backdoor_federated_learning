@@ -1,6 +1,6 @@
 ---
 type: image
-
+dataset: cifar
 ## Epochs
 epochs: 1  # global epochs
 retrain_no_times: 2  # local epochs for benign models
@@ -80,4 +80,3 @@ diff_privacy: false
 fake_participants_load: false
 fake_participants_file: data/reddit/updates_cifar.pt.tar
 fake_participants_save: false
-
