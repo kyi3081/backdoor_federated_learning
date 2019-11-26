@@ -1,2 +1,0 @@
-current path: saved_models/model_fmnist_Nov.21_15.42.27
-Loading data

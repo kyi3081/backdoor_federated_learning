@@ -102,13 +102,19 @@ class ImageHelper(Helper):
 
         return per_participant_list
 
-    # Prepare (sample) non-poisoned data TO BE poisoned in training.py
+    # Prepare (sample) benign, non-poisoned data TO BE poisoned in training.py
     def poison_dataset(self):
         # Remove poisoned images from range_no_id
-        range_no_id = list(range(50000))
-        poisoned_ids = list(set(self.params['poison_images'] + self.params['poison_images_test']))
-        range_no_id = [x for x in range_no_id if x not in poisoned_ids]
+        if self.params['dataset'] == 'cifar':
+            range_no_id = list(range(50000))
+            poisoned_ids = list(set(self.params['poison_images'] + self.params['poison_images_test']))
+        elif self.params['dataset'] == 'fmnist':
+            global_data_len = len(self.train_dataset)
+            range_no_id = list(range(global_data_len))
+            poisoned_ids = list(set(self.params['poison_images'] + self.params['poison_images_test']))
+            # poisoned_ids = list(np.random.choice(global_data_len, self.params['poison_data_samples'], replacement=False))
 
+        range_no_id = [x for x in range_no_id if x not in poisoned_ids]
         # Create the sampler indices of non-poisoned images
         indices = list()
         for batches in range(0, self.params['size_of_secret_dataset']):
@@ -120,13 +126,22 @@ class ImageHelper(Helper):
                            batch_size=self.params['batch_size'],
                            sampler=torch.utils.data.sampler.SubsetRandomSampler(indices))
 
+
     # Prepare 1000 data used to evaluate poisoned models when training them
     def poison_test_dataset(self):
-        return torch.utils.data.DataLoader(self.train_dataset,
-                           batch_size=self.params['batch_size'],
-                           sampler=torch.utils.data.sampler.SubsetRandomSampler(
-                               range(1000)
-                           ))
+        if self.params['dataset'] == 'cifar':
+            return torch.utils.data.DataLoader(self.train_dataset,
+                               batch_size=self.params['batch_size'],
+                               sampler=torch.utils.data.sampler.SubsetRandomSampler(
+                                   range(1000)
+                               ))
+
+        elif self.params['dataset'] == 'fmnist':
+            return torch.utils.data.DataLoader(self.test_dataset,
+                               batch_size=self.params['batch_size'],
+                               sampler=torch.utils.data.sampler.SubsetRandomSampler(
+                                   range(1000)
+                               ))
 
 
     def load_data(self):
@@ -196,7 +211,7 @@ class ImageHelper(Helper):
     # Prepare equally split training data
     def get_train_old(self, all_range, model_no):
         # pdb.set_trace()
-        data_len = int(len(self.train_dataset) / self.params['number_of_total_participants'])
+        data_len = int(len(self.train_dataset) / self.params['number_of_total_participants'])   ## data size for each client
         sub_indices = all_range[model_no * data_len: (model_no + 1) * data_len]
         train_loader = torch.utils.data.DataLoader(self.train_dataset,
                                            batch_size=self.params['batch_size'],

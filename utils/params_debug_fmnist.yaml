@@ -3,14 +3,14 @@ type: image
 dataset: fmnist
 
 ## Epochs
-epochs: 1  # global epochs
-retrain_no_times: 2  # local epochs for benign models
-retrain_poison: 2 # local epochs for adversary
-poison_epochs: [1]  # epochs with adversaries
+epochs: 10              # global FL iters
+retrain_no_times: 5    # local epochs for benign models
+retrain_poison: 5      # local epochs for adversary
+poison_epochs: [9]     # epochs with adversaries
 
 ## Model saving
 save_model: true
-save_on_epochs: [1]
+save_on_epochs: [9]
 
 ## Total participants & sampling
 number_of_total_participants: 20
@@ -23,7 +23,8 @@ is_poison: true # flag to activate backdoor FL
 number_of_adversaries: 1
 poisoning_per_batch: 1  # poisoned images per batch
 poisoned_number: 2 # used in utils.py
-poison_label_swap: 2  # false label of poisoned images
+poison_label_swap: 0  # false label of poisoned images  (attack target class)
+trigger_size: 4       ## pixel size of sticker
 baseline: false  # flag to scale adverersaries' weight updates
 random_compromise: false  # whether to sample models randomly each epoch
 noise_level: 0.01  # level of noise added to poisoned images
@@ -73,7 +74,7 @@ track_distance: false
 track_clusters: false
 log_interval: 10
 
-results_json: false 
+results_json: false
 
 s_norm: 1000000
 diff_privacy: false
