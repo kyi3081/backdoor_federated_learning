@@ -27,7 +27,12 @@ class Helper:
         self.params = params
         self.name = name
         self.best_loss = math.inf
-        self.folder_path = 'saved_models/model_{}_{}'.format(params['dataset'], current_time)
+        experiment_name = "adv_{}_mo_{}_pt_{}_ppb_{}_tr_{}_e_{}_pe_{}_sw_{}_alpha_{}".format(params["number_of_adversaries"],
+         params["no_models"], params["number_of_total_participants"], params["poisoning_per_batch"], params["trigger_size"],
+         params["epochs"], params["poison_epochs"], params["scale_weights"], params["alpha_loss"])
+
+        self.folder_path = 'saved_models/model_{}_{}'.format(params['dataset'], experiment_name)
+    
         try:
             os.mkdir(self.folder_path)
         except FileExistsError:
@@ -224,7 +229,12 @@ class Helper:
             saved_dict = {'state_dict': model.state_dict(), 'epoch': epoch,
                           'lr': self.params['lr']}
             self.save_checkpoint(saved_dict, False, model_name)
-            if epoch in self.params['save_on_epochs']:
+            # By default, we save models during poison epochs, epochs right before/after poison epochs
+            poison_epochs = self.params['poison_epochs']
+            save_epochs = self.params['save_on_epochs'] + poison_epochs + [x-1 for x in poison_epochs] + [x+1 for x in poison_epochs]
+            save_epochs = list(set(save_epochs))
+
+            if epoch in save_epochs:
                 logger.info(f'Saving model on epoch {epoch}')
                 self.save_checkpoint(saved_dict, False, filename=f'{model_name}.epoch_{epoch}')
             if val_loss < self.best_loss:
@@ -233,10 +243,18 @@ class Helper:
 
     # Save local model
     def save_local_model(self, model_id, model, epoch, val_loss, val_acc, adversary=False):
-        if epoch not in self.params['save_on_epochs']:
+        poison_epochs = self.params['poison_epochs']
+        # By default, we save models during poison epochs, epochs right before/after poison epochs
+        save_epochs = self.params['save_on_epochs'] + poison_epochs + [x-1 for x in poison_epochs] + [x+1 for x in poison_epochs]
+        save_epochs = list(set(save_epochs))
+        if epoch not in save_epochs:
             return
 
-        # pdb.set_trace()
+        # Save local weight updates (delta between local and global models)
+        weight_update_dict = {}
+        for name, data in model.state_dict().items():
+            weight_update_dict[name] = (data - self.target_model.state_dict()[name])
+
         if not os.path.exists(self.params['folder_path']):
             os.mkdir(self.params['folder_path'])
         if adversary:
@@ -246,7 +264,7 @@ class Helper:
             model_name = '{}/benign_model_{}_epoch_{}.pt.tar'.format(self.params['folder_path'], model_id, epoch)
             logger.info("Saving benign model at epoch: {}".format(epoch))
 
-        saved_dict = {'state_dict': model.state_dict(), 'epoch': epoch, 'val_loss': val_loss, 'val_acc': val_acc}
+        saved_dict = {'state_dict': model.state_dict(), 'weight_update': weight_update_dict, 'epoch': epoch, 'val_loss': val_loss, 'val_acc': val_acc}
         self.save_checkpoint(saved_dict, False, model_name)
 
 

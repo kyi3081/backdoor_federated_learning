@@ -6,11 +6,11 @@ dataset: fmnist
 epochs: 10              # global FL iters
 retrain_no_times: 5    # local epochs for benign models
 retrain_poison: 5      # local epochs for adversary
-poison_epochs: [9]     # epochs with adversaries
+poison_epochs: [9]     # epochs with adversaries: MUST BE A LIST
 
 ## Model saving
 save_model: true
-save_on_epochs: [9]
+save_on_epochs: [9]  # epochs to save models: : MUST BE A LIST
 
 ## Total participants & sampling
 number_of_total_participants: 20
