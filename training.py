@@ -277,6 +277,7 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                 target_value = target_model.state_dict()[key]
                 new_value = target_value + (value - target_value) * current_number_of_adversaries
                 model.state_dict()[key].copy_(new_value)
+
             distance = helper.model_dist_norm(model, target_params_variables)
             logger.info(f"Total norm for {current_number_of_adversaries} "
                         f"adversaries is: {helper.model_global_norm(model)}. distance: {distance}")
@@ -369,12 +370,33 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                     f'Distance to the global model: {distance_to_global_model:.4f}. '
                     f'Dataset size: {train_data.size(0)}')
 
+
+        helper.local_models_weight_delta[current_data_model] = {}
+        pooled_array = np.array([])
+        mp_2d = torch.nn.MaxPool2d(kernel_size=3, stride=2, padding=0, dilation=1, return_indices=False, ceil_mode=False)
+
         for name, data in model.state_dict().items():
             #### don't scale tied weights:
             if helper.params.get('tied', False) and name == 'decoder.weight' or '__'in name:
                 continue
             weight_accumulator[name].add_(data - target_model.state_dict()[name])
+            helper.local_models_weight_delta[current_data_model][name] = data - target_model.state_dict()[name]
+            ## Save pooled arrays for MAD outlier detection
+            if name in helper.params["mad_layer_names"]:
+                if helper.params["pool"]:
+                    if(len(data.shape) == 4):
+                        p = mp_2d(data.cpu()).reshape((1, 1, -1))
+                    else:
+                        mp_1d = nn.MaxPool1d(kernel_size=data.shape[0], stride=data.shape[0], padding=0)
+                        p = mp_1d(data.cpu().reshape((1, 1, -1)))
+                    arr = np.array(p)
+                    pooled_array = np.append(pooled_array, arr)
+                else:
+                    pooled_array = data.cpu()
 
+        helper.pooled_arrays[current_data_model] = pooled_array
+
+    #pdb.set_trace()
 
     logger.info(f'Finish training all local clients.')
     if helper.params["fake_participants_save"]:
@@ -627,9 +649,27 @@ if __name__ == '__main__':
                                    is_poison=helper.params['is_poison'])
         logger.info(f'time spent on training: {time.time() - t}')
 
-        # Average the models
-        helper.average_shrink_models(target_model=helper.target_model,
-                                     weight_accumulator=weight_accumulator, epoch=epoch)
+        # Global model aggregation
+        # Baseline
+        if helper.params["global_model_aggregation"] == "avg":
+            logger.info("aggregate model updates with baseline averaging")
+            helper.average_shrink_models(target_model=helper.target_model,
+                weight_accumulator=weight_accumulator, epoch=epoch)
+        # Aggregate MAD inlier weight updates
+        if helper.params["global_model_aggregation"] == "mad":
+            logger.info("aggregate model updates with MAD outlier detection")
+            weight_accumulator2 = helper.accumulate_inliers_weight_delta()
+            helper.average_shrink_models(target_model=helper.target_model,
+                weight_accumulator=weight_accumulator2, epoch=epoch)
+        # Krum Aggregate
+        if helper.params["global_model_aggregation"] == "krum":
+            logger.info("aggregate model updates with Krum")
+            helper.krum_aggregate()
+
+        # Aggregate based on coordinate wise median
+        if helper.params["global_model_aggregation"] == "coomed":
+            logger.info("aggregate model updates with coordinate-wise median")
+            helper.coord_median_aggregate()
 
         if helper.params['is_poison']:
             epoch_loss_p, epoch_acc_p = test_poison(helper=helper,
@@ -647,6 +687,9 @@ if __name__ == '__main__':
 
         helper.save_model(epoch=epoch, val_loss=epoch_loss)         ## save global model by default
 
+        # Clear dictionaries for the next epoch
+        helper.pooled_arrays = {}
+        helper.local_models_weight_delta = {}
         logger.info(f'Done in {time.time()-start_time} sec.')
     ## ---- Finish all FL iters ---- ##
     ## Eval final attack success rate
