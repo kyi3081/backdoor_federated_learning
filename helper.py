@@ -55,6 +55,12 @@ class Helper:
         #self.pca_weight_delta = {}  # PCA value of local model weight delta for an epoch
         self.local_models_weight_delta = {}  # local models' weight delta for an epoch
 
+        # Evaluation metrics (per epoch)
+        self.global_accuracy = []
+        self.backdoor_accuracy = []
+        self.false_positive_rate = []
+        self.false_negative_rate = []
+
     def save_checkpoint(self, state, is_best, filename='checkpoint.pth.tar'):
         if not self.params['save_model']:
             return False
@@ -244,8 +250,22 @@ class Helper:
         X = np.vstack(X)
         pca = PCA(n_components=1)
         p_pca = pca.fit_transform(X)
-        outliers = mad_detect_outliers(p_pca, local_model_names, th=3)
-        inliers = set(local_model_names) - set(outliers)
+        outliers = set(mad_detect_outliers(p_pca, local_model_names, th=3))
+        inliers = set(local_model_names) - outliers
+
+        # Compute FNR and FPR
+        all_models = list(self.local_models_weight_delta.keys())
+        adversaries = set(self.params['adversary_list'])
+        outliers = set(all_models) - inliers
+        tp = len(outliers.intersection(adversaries)) # true positives
+        fp = len(outliers) - tp  # false positives
+        fn = len(inliers.intersection(adversaries)) # false negatives
+        tn = len(inliers) - fn  # true negatives
+        fpr = fp/(fp + tn) if (fp + tn) > 0 else None
+        fnr = fn/(fn + tp) if (fn + tp) > 0 else None
+        self.false_positive_rate.append(fpr)
+        self.false_negative_rate.append(fnr)
+
         weight_accumulator = {}
         for name, data in self.target_model.state_dict().items():
             weight_accumulator[name] = torch.zeros_like(data)
@@ -260,14 +280,16 @@ class Helper:
         krum_ind = None; min_score = np.inf
         for name1, data1 in self.local_models_weight_delta.items():
             dists = []
-            tmp1 = list(data1.values())
+            keys1 = list(data1.keys())
+            tmp1 = [data1[k] for k in keys1 if "weight" in k or "bias" in k]
             tmp1 = [x.cpu().numpy() for x in tmp1]
             flatten_weights1 = np.concatenate([x.flatten() for x in tmp1])
             for name2, data2 in self.local_models_weight_delta.items():
                 if name2 == name1:
                     continue
                 else:
-                    tmp2 = list(data2.values())
+                    keys2 = list(data2.keys())
+                    tmp2 = [data2[k] for k in keys2 if "weight" in k or "bias" in k]
                     tmp2 = [x.cpu().numpy() for x in tmp2]
                     flatten_weights2 = np.concatenate([x.flatten() for x in tmp2])
                     dists.append(np.linalg.norm(flatten_weights2 - flatten_weights1))
@@ -277,6 +299,20 @@ class Helper:
             if score < min_score:
                 min_score = score
                 krum_ind = name1
+
+        # Compute FNR and FPR
+        all_models = list(self.local_models_weight_delta.keys())
+        adversaries = set(self.params['adversary_list'])
+        inliers = set([krum_ind])
+        outliers = set(all_models) - inliers
+        tp = len(outliers.intersection(adversaries)) # true positives
+        fp = len(outliers) - tp  # false positives
+        fn = len(inliers.intersection(adversaries)) # false negatives
+        tn = len(inliers) - fn  # true negatives
+        fpr = fp/(fp + tn) if (fp + tn) > 0 else None
+        fnr = fn/(fn + tp) if (fn + tp) > 0 else None
+        self.false_positive_rate.append(fpr)
+        self.false_negative_rate.append(fnr)
 
         weight_accumulator = self.local_models_weight_delta[krum_ind]
 
@@ -301,8 +337,7 @@ class Helper:
                 continue
 
             weight_update_list = [x[name].cpu().numpy() for x in self.local_models_weight_delta.values()]
-            pdb.set_trace()
-            median_vals = np.median(weight_update_list, axis=0)
+            median_vals = np.array(np.median(weight_update_list, axis=0))
             update_per_layer = torch.from_numpy(median_vals).cuda()
 
             if self.params['diff_privacy']:

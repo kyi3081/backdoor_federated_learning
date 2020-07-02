@@ -11,6 +11,7 @@ import pdb
 import cv2
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -700,10 +701,25 @@ if __name__ == '__main__':
                                  model=helper.target_model, is_poison=False, visualize=True)
     logger.info(f'Test accuracy on benign test set of final global model is {epoch_acc}.')
 
+    helper.global_accuracy.append(epoch_acc)
+    helper.backdoor_accuracy.append(epoch_acc_p.item())
 
     if helper.params['is_poison']:
         logger.info(f'MEAN_ACCURACY: {np.mean(mean_acc)}')
     logger.info(f"This run has a label: {helper.params['current_time']}. ")
+
+    # Save evaluation number_of_total_participants
+    if helper.params["save_model"]:
+        if len(helper.false_positive_rate) > 0:
+            df = pd.DataFrame(list(zip(helper.global_accuracy, helper.backdoor_accuracy,
+                helper.false_positive_rate, helper.false_negative_rate)),
+                columns =['global_accuracy', 'backdoor_accuracy', 'false_positive_rate', 'false_negative_rate'])
+        else:
+            df = pd.DataFrame(list(zip(helper.global_accuracy, helper.backdoor_accuracy)),
+                columns =['global_accuracy', 'backdoor_accuracy'])
+        pdb.set_trace()
+        df.to_csv("{}/eval_metrics.csv".format(helper.params['folder_path']))
+
 
     if helper.params.get('results_json', False):
         with open(helper.params['results_json'], 'a') as f:
