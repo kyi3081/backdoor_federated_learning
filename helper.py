@@ -30,9 +30,10 @@ class Helper:
         self.params = params
         self.name = name
         self.best_loss = math.inf
-        experiment_name = "adv_{}_mo_{}_pt_{}_ppb_{}_tr_{}_e_{}_pe_{}_sw_{}_alpha_{}_noniid_{}".format(params["number_of_adversaries"],
+        experiment_name = "adv_{}_mo_{}_pt_{}_ppb_{}_tr_{}_e_{}_pe_{}_sw_{}_alpha_{}_noniid_{}_agg_{}".format(params["number_of_adversaries"],
          params["no_models"], params["number_of_total_participants"], params["poisoning_per_batch"], params["trigger_size"],
-         params["epochs"], params["poison_epochs"], params["scale_weights"], params["alpha_loss"], params["sampling_dirichlet"])
+         params["epochs"], params["poison_epochs"], params["scale_weights"], params["alpha_loss"], params["sampling_dirichlet"],
+         params["global_model_aggregation"])
 
         self.folder_path = 'saved_models/model_{}_{}'.format(params['dataset'], experiment_name)
 
@@ -60,6 +61,10 @@ class Helper:
         self.backdoor_accuracy = []
         self.false_positive_rate = []
         self.false_negative_rate = []
+
+        if self.params["poison_epochs"] == "repeated":
+            self.params["poison_epochs"] = list(range(1, self.params["epochs"] + 1))
+
 
     def save_checkpoint(self, state, is_best, filename='checkpoint.pth.tar'):
         if not self.params['save_model']:
@@ -236,7 +241,7 @@ class Helper:
         """
         Perform FedAvg algorithm after removing outliers
         """
-        def mad_detect_outliers(array, local_model_names, th=3):
+        def mad_detect_outliers(array, local_model_names, th=2):
             array = array.reshape((-1,1))
             assert len(array.shape) == 2
             med = np.median(array)
@@ -245,18 +250,18 @@ class Helper:
             mad_dist = abs_med_diff/mad
             outlier = [local_model_names[i] for i in range(len(mad_dist)) if mad_dist[i] > th]
             return outlier
-        local_model_names = list(self.pooled_arrays.keys())
+        local_model_names = list(self.local_models_weight_delta.keys())
         X = self.pooled_arrays.values()
         X = np.vstack(X)
         pca = PCA(n_components=1)
         p_pca = pca.fit_transform(X)
-        outliers = set(mad_detect_outliers(p_pca, local_model_names, th=3))
+        outliers = set(mad_detect_outliers(p_pca, local_model_names, 3))
         inliers = set(local_model_names) - outliers
 
         # Compute FNR and FPR
         all_models = list(self.local_models_weight_delta.keys())
         adversaries = set(self.params['adversary_list'])
-        outliers = set(all_models) - inliers
+        #outliers = set(all_models) - inliers
         tp = len(outliers.intersection(adversaries)) # true positives
         fp = len(outliers) - tp  # false positives
         fn = len(inliers.intersection(adversaries)) # false negatives
@@ -265,6 +270,7 @@ class Helper:
         fnr = fn/(fn + tp) if (fn + tp) > 0 else None
         self.false_positive_rate.append(fpr)
         self.false_negative_rate.append(fnr)
+        logger.info("## fpr: {}, fnr: {}".format(fpr, fnr))
 
         weight_accumulator = {}
         for name, data in self.target_model.state_dict().items():
@@ -275,9 +281,13 @@ class Helper:
 
     def krum_aggregate(self):
         # First choose the local model to update the global model with
-        agg_num = self.params['no_models'] - self.params['number_of_adversaries'] - 2
+        #f = self.params['number_of_adversaries']
+        # We are assuming colluding adversary setting
+        f = 1
+        agg_num = self.params['no_models'] - f - 2
         assert agg_num >= 1
-        krum_ind = None; min_score = np.inf
+        scores = {}
+        #krum_ind = None; min_score = np.inf
         for name1, data1 in self.local_models_weight_delta.items():
             dists = []
             keys1 = list(data1.keys())
@@ -296,14 +306,19 @@ class Helper:
             dists = np.sort(np.array(dists))
             dists_subset = dists[:agg_num]
             score = np.sum(dists_subset)
-            if score < min_score:
-                min_score = score
-                krum_ind = name1
+            scores[name1] = score
+            #if score < min_score:
+            #    min_score = score
+            #    krum_ind = name1
+        #inliers = set([krum_ind])
+
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1])
+        inliers = set([x[0] for x in sorted_scores][:-f])
 
         # Compute FNR and FPR
         all_models = list(self.local_models_weight_delta.keys())
         adversaries = set(self.params['adversary_list'])
-        inliers = set([krum_ind])
+
         outliers = set(all_models) - inliers
         tp = len(outliers.intersection(adversaries)) # true positives
         fp = len(outliers) - tp  # false positives
@@ -314,22 +329,30 @@ class Helper:
         self.false_positive_rate.append(fpr)
         self.false_negative_rate.append(fnr)
 
-        weight_accumulator = self.local_models_weight_delta[krum_ind]
+        logger.info("## fpr: {}, fnr: {}".format(fpr, fnr))
 
-        # Update the global model
+        weight_accumulator = {}
         for name, data in self.target_model.state_dict().items():
-            if self.params.get('tied', False) and name == 'decoder.weight':
-                continue
+            weight_accumulator[name] = torch.zeros_like(data)
+            for inlier in inliers:
+                weight_accumulator[name].add_(self.local_models_weight_delta[inlier][name])
 
-            # TODO: do we need to apply the same learning rate?
-            update_per_layer = weight_accumulator[name]
+        #pdb.set_trace()
+        #weight_accumulator = self.local_models_weight_delta[krum_ind]
+        # Update the global model
+        # for name, data in self.target_model.state_dict().items():
+        #     if self.params.get('tied', False) and name == 'decoder.weight':
+        #         continue
+        #
+        #     # TODO: do we need to apply the same learning rate?
+        #     update_per_layer = weight_accumulator[name]
+        #
+        #     if self.params['diff_privacy']:
+        #         update_per_layer.add_(self.dp_noise(data, self.params['sigma']))
+        #
+        #     self.target_model.state_dict()[name].copy_(data + update_per_layer)
 
-            if self.params['diff_privacy']:
-                update_per_layer.add_(self.dp_noise(data, self.params['sigma']))
-
-            self.target_model.state_dict()[name].copy_(data + update_per_layer)
-
-        return True
+        return weight_accumulator
 
     def coord_median_aggregate(self):
         for name, data in self.target_model.state_dict().items():
@@ -372,29 +395,30 @@ class Helper:
 
     # Save local model
     def save_local_model(self, model_id, model, epoch, val_loss, val_acc, adversary=False):
-        poison_epochs = self.params['poison_epochs']
-        # By default, we save models during poison epochs, epochs right before/after poison epochs
-        save_epochs = self.params['save_on_epochs'] + poison_epochs + [x-1 for x in poison_epochs] + [x+1 for x in poison_epochs]
-        save_epochs = list(set(save_epochs))
-        if epoch not in save_epochs:
-            return
+        if self.params['save_model']:
+            poison_epochs = self.params['poison_epochs']
+            # By default, we save models during poison epochs, epochs right before/after poison epochs
+            save_epochs = self.params['save_on_epochs'] + poison_epochs + [x-1 for x in poison_epochs] + [x+1 for x in poison_epochs]
+            save_epochs = list(set(save_epochs))
+            if epoch not in save_epochs:
+                return
 
-        # Save local weight updates (delta between local and global models)
-        weight_update_dict = {}
-        for name, data in model.state_dict().items():
-            weight_update_dict[name] = (data - self.target_model.state_dict()[name])
+            # Save local weight updates (delta between local and global models)
+            weight_update_dict = {}
+            for name, data in model.state_dict().items():
+                weight_update_dict[name] = (data - self.target_model.state_dict()[name])
 
-        if not os.path.exists(self.params['folder_path']):
-            os.mkdir(self.params['folder_path'])
-        if adversary:
-            model_name = '{}/adversary_model_epoch_{}.pt.tar'.format(self.params['folder_path'], epoch)
-            logger.info("Saving adversary model at epoch: {}".format(epoch))
-        else:
-            model_name = '{}/benign_model_{}_epoch_{}.pt.tar'.format(self.params['folder_path'], model_id, epoch)
-            logger.info("Saving benign model at epoch: {}".format(epoch))
+            if not os.path.exists(self.params['folder_path']):
+                os.mkdir(self.params['folder_path'])
+            if adversary:
+                model_name = '{}/adversary_model_epoch_{}.pt.tar'.format(self.params['folder_path'], epoch)
+                logger.info("Saving adversary model at epoch: {}".format(epoch))
+            else:
+                model_name = '{}/benign_model_{}_epoch_{}.pt.tar'.format(self.params['folder_path'], model_id, epoch)
+                logger.info("Saving benign model at epoch: {}".format(epoch))
 
-        saved_dict = {'state_dict': model.state_dict(), 'weight_update': weight_update_dict, 'epoch': epoch, 'val_loss': val_loss, 'val_acc': val_acc}
-        self.save_checkpoint(saved_dict, False, model_name)
+            saved_dict = {'state_dict': model.state_dict(), 'weight_update': weight_update_dict, 'epoch': epoch, 'val_loss': val_loss, 'val_acc': val_acc}
+            self.save_checkpoint(saved_dict, False, model_name)
 
 
 

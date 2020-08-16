@@ -89,7 +89,6 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
             poisoned_data = helper.poisoned_data_for_train      ## non-poisoned training set
 
             # Get accuracy on poisoned test dataset
-            # pdb.set_trace()
             _, acc_p = test_poison(helper=helper, epoch=epoch,
                                    data_source=helper.test_data_poison,
                                    model=model, is_poison=True, visualize=False)
@@ -397,8 +396,6 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
 
         helper.pooled_arrays[current_data_model] = pooled_array
 
-    #pdb.set_trace()
-
     logger.info(f'Finish training all local clients.')
     if helper.params["fake_participants_save"]:
         torch.save(weight_accumulator,
@@ -632,14 +629,17 @@ if __name__ == '__main__':
         else:
             if epoch in helper.params['poison_epochs']:
                 ### For poison epoch we put one adversary and other adversaries just stay quiet
+                benign_ids = list(set(participant_ids) - set(helper.params['adversary_list']))
                 subset_data_chunks = [participant_ids[0]] + [-1] * (
                 helper.params['number_of_adversaries'] - 1) + \
-                                     random.sample(participant_ids[1:],
+                                     random.sample(benign_ids,
                                                    helper.params['no_models'] - helper.params[
                                                        'number_of_adversaries'])
             else:
-                subset_data_chunks = random.sample(participant_ids[1:], helper.params['no_models'])
+                benign_ids = list(set(participant_ids) - set(helper.params['adversary_list']))
+                subset_data_chunks = random.sample(benign_ids, helper.params['no_models'])
                 logger.info(f'Selected models: {subset_data_chunks}')
+
         t=time.time()
 
         ## ====== Train all selected local clients ======== ##
@@ -665,7 +665,9 @@ if __name__ == '__main__':
         # Krum Aggregate
         if helper.params["global_model_aggregation"] == "krum":
             logger.info("aggregate model updates with Krum")
-            helper.krum_aggregate()
+            weight_accumulator2 = helper.krum_aggregate()
+            helper.average_shrink_models(target_model=helper.target_model,
+                weight_accumulator=weight_accumulator2, epoch=epoch)
 
         # Aggregate based on coordinate wise median
         if helper.params["global_model_aggregation"] == "coomed":
@@ -680,13 +682,19 @@ if __name__ == '__main__':
                                                     visualize=True)
             mean_acc.append(epoch_acc_p)
             results['poison'].append({'epoch': epoch, 'acc': epoch_acc_p})
-            # pdb.set_trace()
             logger.info('epoch {}, poison acc {}. '.format(epoch, epoch_acc_p))
 
+
+        epoch_loss_p, epoch_acc_p = test_poison(helper=helper, epoch=epoch, data_source=helper.test_data_poison,
+                                                model=helper.target_model, is_poison=True, visualize=True)
         epoch_loss, epoch_acc = test(helper=helper, epoch=epoch, data_source=helper.test_data,
                                      model=helper.target_model, is_poison=False, visualize=True)
 
         helper.save_model(epoch=epoch, val_loss=epoch_loss)         ## save global model by default
+
+        helper.global_accuracy.append(epoch_acc)
+        helper.backdoor_accuracy.append(epoch_acc_p.item())
+
 
         # Clear dictionaries for the next epoch
         helper.pooled_arrays = {}
@@ -701,24 +709,20 @@ if __name__ == '__main__':
                                  model=helper.target_model, is_poison=False, visualize=True)
     logger.info(f'Test accuracy on benign test set of final global model is {epoch_acc}.')
 
-    helper.global_accuracy.append(epoch_acc)
-    helper.backdoor_accuracy.append(epoch_acc_p.item())
 
     if helper.params['is_poison']:
         logger.info(f'MEAN_ACCURACY: {np.mean(mean_acc)}')
     logger.info(f"This run has a label: {helper.params['current_time']}. ")
 
     # Save evaluation number_of_total_participants
-    if helper.params["save_model"]:
-        if len(helper.false_positive_rate) > 0:
-            df = pd.DataFrame(list(zip(helper.global_accuracy, helper.backdoor_accuracy,
-                helper.false_positive_rate, helper.false_negative_rate)),
-                columns =['global_accuracy', 'backdoor_accuracy', 'false_positive_rate', 'false_negative_rate'])
-        else:
-            df = pd.DataFrame(list(zip(helper.global_accuracy, helper.backdoor_accuracy)),
-                columns =['global_accuracy', 'backdoor_accuracy'])
-        pdb.set_trace()
-        df.to_csv("{}/eval_metrics.csv".format(helper.params['folder_path']))
+    if len(helper.false_positive_rate) > 0:
+        df = pd.DataFrame(list(zip(helper.global_accuracy, helper.backdoor_accuracy,
+            helper.false_positive_rate, helper.false_negative_rate)),
+            columns =['global_accuracy', 'backdoor_accuracy', 'false_positive_rate', 'false_negative_rate'])
+    else:
+        df = pd.DataFrame(list(zip(helper.global_accuracy, helper.backdoor_accuracy)),
+            columns =['global_accuracy', 'backdoor_accuracy'])
+    df.to_csv("{}/eval_metrics.csv".format(helper.params['folder_path']))
 
 
     if helper.params.get('results_json', False):
