@@ -40,6 +40,7 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
     logger.info("########Start training for global epoch: {}########".format(epoch))
     # weight_accumulator accumulates weight updates for all participants
     weight_accumulator = dict()
+
     for name, data in target_model.state_dict().items():
         #### don't scale tied weights:
         if helper.params.get('tied', False) and name == 'decoder.weight' or '__'in name:
@@ -55,6 +56,7 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
     current_number_of_adversaries = len(adversay_ids)
     logger.info(f'There are {current_number_of_adversaries} adversaries in global epoch: {epoch}')
 
+    local_global_dist_norms = []
     ### Train the selected models
     for model_id in range(helper.params['no_models']):
         model = local_model
@@ -135,28 +137,28 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                     ## ------ Prepare poisoned data batch for adversary client --------- ##
                     for batch_id, batch in enumerate(data_iterator):
                         if helper.params['type'] == 'image':
-                            if helper.params['dataset'] == 'cifar':
-                                # Semantic backdoor: Create poisoned training images - added noise and flipped the label
+                            ## Semantic backdoor: Create poisoned training images - added noise and flipped the label
+                            if helper.params['poison_type'] == 'semantic':
                                 for i in range(helper.params['poisoning_per_batch']):  # Number of poisoned images per batch
-                                    for pos, image in enumerate(helper.params['poison_images']):
-                                        poison_pos = len(helper.params['poison_images'])*i + pos
-                                        batch[0][poison_pos] = helper.train_dataset[image][0]
-                                        batch[0][poison_pos].add_(torch.FloatTensor(batch[0][poison_pos].shape).normal_(0, helper.params['noise_level']))
+                                    n_backdoors = min(helper.params["backdoors_in_batch"], len(helper.params['poison_images']))
+                                    poison_images_in_batch = random.sample(helper.params['poison_images'], n_backdoors)
+                                    for pos, image in enumerate(poison_images_in_batch):
+                                        poison_pos = n_backdoors*i + pos
+                                        batch[0][poison_pos] = helper.train_dataset[image][0].add_(torch.FloatTensor(batch[0][poison_pos].shape).normal_(0, helper.params['noise_level']))
                                         batch[1][poison_pos] = helper.params['poison_label_swap']
                             ## Pixel pattern backdoor. add sticker to images
-                            elif helper.params['dataset'] == 'fmnist':
+                            elif helper.params['poison_type'] == 'pixel':
                                 for i in range(helper.params['poisoning_per_batch']):  # Number of poisoned images per batch
-                                    for pos, image in enumerate(helper.params['poison_images']):
-                                        poison_pos = len(helper.params['poison_images'])*i + pos
+                                    n_backdoors = min(helper.params["backdoors_in_batch"], len(helper.params['poison_images']))
+                                    poison_images_in_batch = random.sample(helper.params['poison_images'], n_backdoors)
+                                    for pos, image in enumerate(poison_images_in_batch):
+                                        poison_pos = n_backdoors*i + pos
                                         batch[0][poison_pos] = helper.train_dataset[image][0]
 
                                         trigger_pattern = torch.zeros_like(batch[0][poison_pos])        ## fmnist <1, 28, 28>
                                         trigger_pattern[:, -(helper.params['trigger_size']+1):-1, -(helper.params['trigger_size']+1):-1] = torch.ones((trigger_pattern.shape[0], helper.params['trigger_size'], helper.params['trigger_size']))
-                                        # test_img = (batch[0][poison_pos].cpu().numpy()+1) * 255./2
-                                        # cv2.imwrite('org_img.png', test_img[0].astype(np.uint8))
+
                                         batch[0][poison_pos] = torch.clamp(batch[0][poison_pos].add_(trigger_pattern), min=-1., max=1.)
-                                        # poison_img = (batch[0][poison_pos].cpu().numpy()+1) * 255./2
-                                        # cv2.imwrite('poison_img.png', poison_img[0].astype(np.uint8))
                                         batch[1][poison_pos] = helper.params['poison_label_swap']
 
                         data, targets = helper.get_batch(poisoned_data, batch, False)
@@ -171,19 +173,19 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                             output = model(data)
                             class_loss = nn.functional.cross_entropy(output, targets)
 
-                        all_model_distance = helper.model_dist_norm(target_model, target_params_variables)
+                        # all_model_distance = helper.model_dist_norm(target_model, target_params_variables)
                         distance_loss = helper.model_dist_norm_var(model, target_params_variables)
 
                         loss = helper.params['alpha_loss'] * class_loss + (1 - helper.params['alpha_loss']) * distance_loss
-
-
                         loss.backward()
 
                         if helper.params['diff_privacy']:
-                            torch.nn.utils.clip_grad_norm(model.parameters(), helper.params['clip'])
+                            # Firt update the local model
+                            #torch.nn.utils.clip_grad_norm(model.parameters(), helper.params['clip'])
                             poison_optimizer.step()
 
                             model_norm = helper.model_dist_norm(model, target_params_variables)
+                            #logger.info("##### model norm : {}".format(model_norm))
                             if model_norm > helper.params['s_norm']:
                                 logger.info(
                                     f'The limit reached for distance: '
@@ -222,9 +224,9 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                 logger.info('Converged earlier')
 
             logger.info(f'Global model norm: {helper.model_global_norm(target_model)}.')
+            local_target_dist_norm = helper.model_dist_norm(model, target_params_variables)
             logger.info(f'Norm before scaling: {helper.model_global_norm(model)}. '
-                        f'Distance: {helper.model_dist_norm(model, target_params_variables)}')
-
+                        f'Distance: {local_target_dist_norm}')
 
             ### Adversary wants to scale his weights. Baseline model doesn't do this
             if not helper.params['baseline']:
@@ -247,6 +249,7 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
 
             if helper.params['diff_privacy']:
                 model_norm = helper.model_dist_norm(model, target_params_variables)
+                #logger.info("##### model norm : {}".format(model_norm))
 
                 if model_norm > helper.params['s_norm']:
                     norm_scale = helper.params['s_norm'] / (model_norm)
@@ -287,7 +290,6 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                              model=model, is_poison=True, visualize=False)
             # Save the adversary model
             helper.save_local_model(model_id=current_data_model,model=model, epoch=epoch, val_loss=epoch_loss, val_acc=epoch_acc, adversary=True)
-
 
         #### Train a benign model    #####
         else:
@@ -356,7 +358,6 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                         start_time = time.time()
                     # logger.info(f'model {model_id} distance: {helper.model_dist_norm(model, target_params_variables)}')
 
-
             epoch_loss, epoch_acc = test(helper=helper, epoch=epoch, data_source=helper.test_data,
                                          model=model, is_poison=False, visualize=False)
             # Save benign model
@@ -370,10 +371,13 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                     f'Distance to the global model: {distance_to_global_model:.4f}. '
                     f'Dataset size: {train_data.size(0)}')
 
-
         helper.local_models_weight_delta[current_data_model] = {}
         pooled_array = np.array([])
         mp_2d = torch.nn.MaxPool2d(kernel_size=3, stride=2, padding=0, dilation=1, return_indices=False, ceil_mode=False)
+
+        # Track local model's distance to global model
+        distance_to_global_model = helper.model_dist_norm(model, target_params_variables)
+        local_global_dist_norms.append(round(distance_to_global_model,2))
 
         for name, data in model.state_dict().items():
             #### don't scale tied weights:
@@ -392,9 +396,14 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                     arr = np.array(p)
                     pooled_array = np.append(pooled_array, arr)
                 else:
-                    pooled_array = data.cpu()
+                    pooled_array = np.append(pooled_array, data.cpu())
 
         helper.pooled_arrays[current_data_model] = pooled_array
+
+        # Foolsgold: Aggregate historical vector of the ouput layer
+        if helper.params["global_model_aggregation"] == "foolsgold":
+            output_weights = torch.cat([model.state_dict()[x].view(-1) for x in helper.params["mad_layer_names"]])
+            helper.historical_output_weights[current_data_model] += output_weights
 
     logger.info(f'Finish training all local clients.')
     if helper.params["fake_participants_save"]:
@@ -411,6 +420,9 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
             if helper.params.get('tied', False) and name == 'decoder.weight' or '__'in name:
                 continue
             weight_accumulator[name].add_(fake_weight_accumulator[name])
+
+    # Take the average distance to global models
+    helper.median_distance_to_global.append(np.median(local_global_dist_norms))
 
     return weight_accumulator
 
@@ -526,18 +538,6 @@ def test_poison(helper, epoch, data_source, model, is_poison=False, visualize=Tr
         data_iterator = data_source
         dataset_size = 1000
         for batch_id, batch in enumerate(data_iterator):
-            # Swap the label of images set apart for poison testing
-            for pos in range(len(batch[0])):
-                batch[0][pos] = helper.train_dataset[random.choice(helper.params['poison_images_test'])][0]
-                ## Pixel backdoor for FMNIST dataset.
-                if helper.params['dataset'] == 'fmnist':
-                    trigger_pattern = torch.zeros_like(batch[0][pos])        ## fmnist <1, 28, 28>
-                    trigger_pattern[:, -(helper.params['trigger_size']+1):-1, -(helper.params['trigger_size']+1):-1] = torch.ones((trigger_pattern.shape[0],
-                                            helper.params['trigger_size'], helper.params['trigger_size']))
-                    batch[0][pos] += trigger_pattern
-
-                batch[1][pos] = helper.params['poison_label_swap']
-
             data, targets = helper.get_batch(data_source, batch, evaluation=True)
             output = model(data)
             total_loss += nn.functional.cross_entropy(output, targets,
@@ -602,6 +602,17 @@ if __name__ == '__main__':
 
     weight_accumulator = None
 
+
+    # FoolsGold: initialize historical weight vectors
+    if helper.params["global_model_aggregation"] == "foolsgold":
+        vector_len = 0
+        for layer_name in helper.params["mad_layer_names"]:
+            vector_len += helper.target_model.state_dict()[layer_name].view(-1).shape[-1]
+        zero_tensor = torch.zeros((vector_len))
+        for pcp_id in participant_ids:
+            helper.historical_output_weights[pcp_id] = zero_tensor.cuda()
+
+
     # save parameters:
     with open(f'{helper.folder_path}/params.yaml', 'w') as f:
         yaml.dump(helper.params, f)
@@ -610,31 +621,37 @@ if __name__ == '__main__':
         start_time = time.time()
 
         # Random compromise - randomly select clients based on no_models
-        if helper.params["random_compromise"]:
+        if helper.params["random_compromise"] and epoch > 1:
             subset_data_chunks = random.sample(participant_ids, helper.params['no_models'])
+
+            if len(set(subset_data_chunks) & set(helper.params['adversary_list'])) > 0:
+                helper.params["poison_epochs"].append(epoch)
 
             ### As we assume that compromised attackers can coordinate
             ### Then a single attacker will just submit scaled weights by #
             ### of attackers in selected round. Other attackers won't submit.
-            already_poisoning = False
-            for pos, loader_id in enumerate(subset_data_chunks):
-                if loader_id in helper.params['adversary_list']:
-                    if already_poisoning:
-                        logger.info(f'Compromised: {loader_id}. Skipping.')
-                        subset_data_chunks[pos] = -1
-                    else:
-                        logger.info(f'Compromised: {loader_id}')
-                        already_poisoning = True
+            # already_poisoning = False
+            # for pos, loader_id in enumerate(subset_data_chunks):
+            #     if loader_id in helper.params['adversary_list']:
+            #         if already_poisoning:
+            #             logger.info(f'Compromised: {loader_id}. Skipping.')
+            #             subset_data_chunks[pos] = -1
+            #         else:
+            #             logger.info(f'Compromised: {loader_id}')
+            #             already_poisoning = True
+            #             helper.params["poison_epochs"].append(epoch)
         ## Only sample non-poisoned participants until poisoned_epoch
         else:
             if epoch in helper.params['poison_epochs']:
                 ### For poison epoch we put one adversary and other adversaries just stay quiet
                 benign_ids = list(set(participant_ids) - set(helper.params['adversary_list']))
-                subset_data_chunks = [participant_ids[0]] + [-1] * (
-                helper.params['number_of_adversaries'] - 1) + \
-                                     random.sample(benign_ids,
-                                                   helper.params['no_models'] - helper.params[
-                                                       'number_of_adversaries'])
+                subset_data_chunks = helper.params['adversary_list'] + random.sample(benign_ids,
+                    helper.params['no_models'] - helper.params['number_of_adversaries'])
+                # subset_data_chunks = [participant_ids[0]] + [-1] * (
+                # helper.params['number_of_adversaries'] - 1) + \
+                #                      random.sample(benign_ids,
+                #                                    helper.params['no_models'] - helper.params[
+                #                                        'number_of_adversaries'])
             else:
                 benign_ids = list(set(participant_ids) - set(helper.params['adversary_list']))
                 subset_data_chunks = random.sample(benign_ids, helper.params['no_models'])
@@ -652,6 +669,7 @@ if __name__ == '__main__':
 
         # Global model aggregation
         # Baseline
+        agg_start = time.time()
         if helper.params["global_model_aggregation"] == "avg":
             logger.info("aggregate model updates with baseline averaging")
             helper.average_shrink_models(target_model=helper.target_model,
@@ -674,6 +692,16 @@ if __name__ == '__main__':
             logger.info("aggregate model updates with coordinate-wise median")
             helper.coord_median_aggregate()
 
+        # Aggregate based on Foolsgold
+        if helper.params["global_model_aggregation"] == "foolsgold":
+            logger.info("aggregate model updates with foolsgold")
+            weight_accumulator2 = helper.foolsgold_aggregate()
+            helper.average_shrink_models(target_model=helper.target_model,
+                weight_accumulator=weight_accumulator2, epoch=epoch)
+
+        agg_duration = round(time.time() - agg_start,2)
+        helper.agg_runtime.append(agg_duration)
+
         if helper.params['is_poison']:
             epoch_loss_p, epoch_acc_p = test_poison(helper=helper,
                                                     epoch=epoch,
@@ -692,14 +720,16 @@ if __name__ == '__main__':
 
         helper.save_model(epoch=epoch, val_loss=epoch_loss)         ## save global model by default
 
-        helper.global_accuracy.append(epoch_acc)
-        helper.backdoor_accuracy.append(epoch_acc_p.item())
+        helper.global_accuracy.append(round(epoch_acc, 4))
+        helper.backdoor_accuracy.append(round(epoch_acc_p.item(), 4))
 
 
         # Clear dictionaries for the next epoch
         helper.pooled_arrays = {}
         helper.local_models_weight_delta = {}
-        logger.info(f'Done in {time.time()-start_time} sec.')
+        runtime = time.time()-start_time
+        logger.info(f'Done in {runtime} sec.')
+        helper.runtime.append(round(runtime, 2))
     ## ---- Finish all FL iters ---- ##
     ## Eval final attack success rate
     epoch_loss_p, epoch_acc_p = test_poison(helper=helper, epoch=epoch, data_source=helper.test_data_poison,
@@ -714,16 +744,26 @@ if __name__ == '__main__':
         logger.info(f'MEAN_ACCURACY: {np.mean(mean_acc)}')
     logger.info(f"This run has a label: {helper.params['current_time']}. ")
 
+    if helper.params["random_compromise"]:
+        logger.info(f'poison_epochs: {helper.params["poison_epochs"]}')
+
+    logger.info(f"aggregation runtime: {helper.agg_runtime}")
+
     # Save evaluation number_of_total_participants
     if len(helper.false_positive_rate) > 0:
         df = pd.DataFrame(list(zip(helper.global_accuracy, helper.backdoor_accuracy,
-            helper.false_positive_rate, helper.false_negative_rate)),
-            columns =['global_accuracy', 'backdoor_accuracy', 'false_positive_rate', 'false_negative_rate'])
+            helper.false_positive_rate, helper.false_negative_rate, helper.median_distance_to_global,
+            helper.runtime, helper.agg_runtime)),
+            columns =['global_accuracy', 'backdoor_accuracy', 'false_positive_rate', 'false_negative_rate',
+                "median_dist_to_global", "runtime", "agg_runtime"])
     else:
-        df = pd.DataFrame(list(zip(helper.global_accuracy, helper.backdoor_accuracy)),
-            columns =['global_accuracy', 'backdoor_accuracy'])
+        df = pd.DataFrame(list(zip(helper.global_accuracy, helper.backdoor_accuracy,
+            helper.median_distance_to_global, helper.runtime, helper.agg_runtime)),
+            columns =['global_accuracy', 'backdoor_accuracy', 'median_dist_to_global', "runtime", "agg_runtime"])
     df.to_csv("{}/eval_metrics.csv".format(helper.params['folder_path']))
 
+    df2 = pd.DataFrame(helper.params["poison_epochs"])
+    df2.to_csv("{}/poison_epochs.csv".format(helper.params['folder_path']))
 
     if helper.params.get('results_json', False):
         with open(helper.params['results_json'], 'a') as f:

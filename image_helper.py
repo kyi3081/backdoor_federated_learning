@@ -130,19 +130,59 @@ class ImageHelper(Helper):
     # Prepare 1000 data used to evaluate poisoned models when training them
     def poison_test_dataset(self):
         if self.params['dataset'] == 'cifar':
-            return torch.utils.data.DataLoader(self.train_dataset,
-                               batch_size=self.params['batch_size'],
-                               sampler=torch.utils.data.sampler.SubsetRandomSampler(
-                                   range(1000)
-                               ))
+            transform_test = transforms.Compose([
+                transforms.ToPILImage(),
+                transforms.RandomCrop(32, padding=4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            ])
+
+            new_data_list = []
+            for i in range(len(self.test_dataset)):
+                new_img = self.train_dataset[random.choice(self.params['poison_images_test'])][0]
+                if self.params["poison_type"] == "pixel":
+                    trigger_pattern = torch.zeros_like(new_img)        ## fmnist <1, 28, 28>
+                    trigger_pattern[:, -(self.params['trigger_size']+1):-1, -(self.params['trigger_size']+1):-1] = torch.ones((trigger_pattern.shape[0],
+                        self.params['trigger_size'], self.params['trigger_size']))
+                    new_img += trigger_pattern
+
+                else:
+                    new_img = transform_test(new_img)
+                new_data_list.append((new_img, self.params['poison_label_swap']))
+
+            data_iterator = torch.utils.data.DataLoader(new_data_list,
+                batch_size=self.params['batch_size'],
+                sampler=torch.utils.data.sampler.SubsetRandomSampler(range(1000)))
+
+            return data_iterator
 
         elif self.params['dataset'] == 'fmnist':
-            return torch.utils.data.DataLoader(self.test_dataset,
-                               batch_size=self.params['batch_size'],
-                               sampler=torch.utils.data.sampler.SubsetRandomSampler(
-                                   range(1000)
-                               ))
+            transform_test = transforms.Compose([
+                transforms.RandomCrop(28, padding=4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5])
+            ])
 
+            new_data_list = []
+            for i in range(len(self.test_dataset)):
+                new_img = self.train_dataset[random.choice(self.params['poison_images_test'])][0]
+                if self.params["poison_type"] == "pixel":
+                    trigger_pattern = torch.zeros_like(new_img)        ## fmnist <1, 28, 28>
+                    trigger_pattern[:, -(self.params['trigger_size']+1):-1, -(self.params['trigger_size']+1):-1] = torch.ones((trigger_pattern.shape[0],
+                        self.params['trigger_size'], self.params['trigger_size']))
+                    new_img += trigger_pattern
+
+                else:
+                    new_img = transform_test(new_img)
+                new_data_list.append((new_img, self.params['poison_label_swap']))
+
+            data_iterator = torch.utils.data.DataLoader(new_data_list,
+                batch_size=self.params['batch_size'],
+                sampler=torch.utils.data.sampler.SubsetRandomSampler(range(1000)))
+
+            return data_iterator
 
     def load_data(self):
         logger.info('Loading data')
@@ -169,12 +209,20 @@ class ImageHelper(Helper):
             self.test_dataset = datasets.CIFAR10('./data', train=False, transform=transform_test)
 
         elif self.params["dataset"] == "fmnist":
-            # transform = transforms.Compose([transforms.ToTensor(),
-            #     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-            # ])
-            transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.5], [0.5])])
-            self.train_dataset = datasets.FashionMNIST('F_MNIST_data/', download=True, train=True, transform=transform)
-            self.test_dataset = datasets.FashionMNIST('F_MNIST_data/', download=True, train=False, transform=transform)
+            transform_train = transforms.Compose([
+                transforms.RandomCrop(28, padding=4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5])
+            ])
+
+            transform_test = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5])
+            ])
+            #transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.5], [0.5])])
+            self.train_dataset = datasets.FashionMNIST('F_MNIST_data/', download=True, train=True, transform=transform_train)
+            self.test_dataset = datasets.FashionMNIST('F_MNIST_data/', download=True, train=False, transform=transform_test)
 
 
         # If sampling training dataset of PCPs based on Dirichlet distribution
@@ -195,9 +243,6 @@ class ImageHelper(Helper):
         self.test_data = self.get_test()
         self.poisoned_data_for_train = self.poison_dataset()
         self.test_data_poison = self.poison_test_dataset()
-        # pdb.set_trace()
-        # for x, y in enumerate(train_loaders[0][1]):
-        #     print(y[0].shape)
 
 
     # Prepare training data based on Dirichlet distribution

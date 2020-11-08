@@ -6,7 +6,7 @@ import pdb
 
 from torch.autograd import Variable
 import logging
-
+import torch.nn as nn
 from torch.nn.functional import log_softmax
 import torch.nn.functional as F
 logger = logging.getLogger("logger")
@@ -30,12 +30,13 @@ class Helper:
         self.params = params
         self.name = name
         self.best_loss = math.inf
-        experiment_name = "adv_{}_mo_{}_pt_{}_ppb_{}_tr_{}_e_{}_pe_{}_sw_{}_alpha_{}_noniid_{}_agg_{}".format(params["number_of_adversaries"],
+        experiment_name = "adv_{}_mo_{}_pt_{}_ppb_{}_tr_{}_e_{}_pe_{}_le_{}_sw_{}_alpha_{}_noniid_{}_agg_{}_dp_{}_snorm_{}_sigma_{}_pooling_{}".format(params["number_of_adversaries"],
          params["no_models"], params["number_of_total_participants"], params["poisoning_per_batch"], params["trigger_size"],
-         params["epochs"], params["poison_epochs"], params["scale_weights"], params["alpha_loss"], params["sampling_dirichlet"],
-         params["global_model_aggregation"])
+         params["epochs"], params["poison_epochs"], params["retrain_no_times"], params["scale_weights"],
+         params["alpha_loss"], params["sampling_dirichlet"],
+         params["global_model_aggregation"], params["diff_privacy"], params["s_norm"], params["sigma"], params["pool"])
 
-        self.folder_path = 'saved_models/model_{}_{}'.format(params['dataset'], experiment_name)
+        self.folder_path = 'saved_models/{}_{}_{}'.format(params['dataset'], params['poison_type'], experiment_name)
 
         try:
             os.mkdir(self.folder_path)
@@ -61,10 +62,21 @@ class Helper:
         self.backdoor_accuracy = []
         self.false_positive_rate = []
         self.false_negative_rate = []
+        self.median_distance_to_global = []
+        self.runtime = []
+        self.agg_runtime = []
 
-        if self.params["poison_epochs"] == "repeated":
+        # Foolsgold: Historical weight vector of the output layer
+        self.historical_output_weights = dict()
+
+
+        if self.params["poison_epochs"] == "repeated" and self.params["random_compromise"] == False:
             self.params["poison_epochs"] = list(range(1, self.params["epochs"] + 1))
 
+        if self.params["random_compromise"] == True:
+            self.params["poison_epochs"] = []
+        # if self.params["poison_type"] == "pixel":
+        #     self.assign_pixel_poison_images()
 
     def save_checkpoint(self, state, is_best, filename='checkpoint.pth.tar'):
         if not self.params['save_model']:
@@ -227,8 +239,11 @@ class Helper:
             if self.params.get('tied', False) and name == 'decoder.weight':
                 continue
 
-            update_per_layer = weight_accumulator[name] * \
-                               (self.params["eta"] / self.params["number_of_total_participants"])
+            if self.params["global_model_aggregation"] == "foolsgold":
+                update_per_layer = weight_accumulator[name]
+            else:
+                update_per_layer = weight_accumulator[name] * \
+                                   (self.params["eta"] / self.params["number_of_total_participants"])
 
             if self.params['diff_privacy']:
                 update_per_layer.add_(self.dp_noise(data, self.params['sigma']))
@@ -251,11 +266,38 @@ class Helper:
             outlier = [local_model_names[i] for i in range(len(mad_dist)) if mad_dist[i] > th]
             return outlier
         local_model_names = list(self.local_models_weight_delta.keys())
+
+        ## TO delete
+        # tmp = {}
+        #
+        # for current_model in local_model_names:
+        #     weight_delta = self.local_models_weight_delta[current_model]
+        #     pooled_array = np.array([])
+        #     for name in self.params["mad_layer_names"]:
+        #         data = weight_delta[name]
+        #         mp_1d = nn.MaxPool1d(kernel_size=data.shape[0], stride=data.shape[0], padding=0)
+        #         p = mp_1d(data.cpu().reshape((1, 1, -1)))
+        #         arr = np.array(p)
+        #         pooled_array = np.append(pooled_array, arr)
+        #
+        #     tmp[current_model] = pooled_array
+
+        ####
         X = self.pooled_arrays.values()
         X = np.vstack(X)
+        X = np.nan_to_num(X)
+        #pdb.set_trace()
         pca = PCA(n_components=1)
         p_pca = pca.fit_transform(X)
-        outliers = set(mad_detect_outliers(p_pca, local_model_names, 3))
+        # Dynamic thresholding based on global accuracy
+        if self.params["dataset"] == "fmnist":
+            if len(self.global_accuracy) == 0 or self.global_accuracy[-1] < 50:
+                outliers = set(mad_detect_outliers(p_pca, local_model_names, 3))
+            else:
+                outliers = set(mad_detect_outliers(p_pca, local_model_names, 3))
+
+        if self.params["dataset"] == "cifar":
+            outliers = set(mad_detect_outliers(p_pca, local_model_names, 3))
         inliers = set(local_model_names) - outliers
 
         # Compute FNR and FPR
@@ -313,6 +355,7 @@ class Helper:
         #inliers = set([krum_ind])
 
         sorted_scores = sorted(scores.items(), key=lambda x: x[1])
+        # TODO: fix this to exclude only 1...
         inliers = set([x[0] for x in sorted_scores][:-f])
 
         # Compute FNR and FPR
@@ -337,21 +380,6 @@ class Helper:
             for inlier in inliers:
                 weight_accumulator[name].add_(self.local_models_weight_delta[inlier][name])
 
-        #pdb.set_trace()
-        #weight_accumulator = self.local_models_weight_delta[krum_ind]
-        # Update the global model
-        # for name, data in self.target_model.state_dict().items():
-        #     if self.params.get('tied', False) and name == 'decoder.weight':
-        #         continue
-        #
-        #     # TODO: do we need to apply the same learning rate?
-        #     update_per_layer = weight_accumulator[name]
-        #
-        #     if self.params['diff_privacy']:
-        #         update_per_layer.add_(self.dp_noise(data, self.params['sigma']))
-        #
-        #     self.target_model.state_dict()[name].copy_(data + update_per_layer)
-
         return weight_accumulator
 
     def coord_median_aggregate(self):
@@ -369,6 +397,61 @@ class Helper:
             self.target_model.state_dict()[name].copy_(data + update_per_layer)
 
         return True
+
+    def foolsgold_aggregate(self):
+
+        def elementwise_logit(x, confidence_param):
+            return min(max(confidence_param * (np.log(x/(1-x)) + 0.5), 0.0), 1.0)
+
+        local_model_names = list(self.local_models_weight_delta.keys())
+        cs = np.zeros((len(local_model_names), len(local_model_names)))
+        lrs = [0] * len(local_model_names)
+        # Identify indicative features in the output layer (hard vs soft version?)
+        target_output = torch.cat([self.target_model.state_dict()[x].view(-1) for x in self.params["mad_layer_names"]])
+        n_ind_features = int(self.params["ind_feature_ratio"] * len(target_output))
+        vals, inds = abs(target_output).topk(n_ind_features)
+
+        # Retrive historical aggregate weights of current PCPs
+        for i, cur_model in enumerate(local_model_names):
+            cur_vec = self.historical_output_weights[cur_model]
+            cur_vec = cur_vec[inds]
+            #other_model_names = list(set(local_model_names) - set(cur_model))
+            for j, other_model in enumerate(local_model_names):
+                if i==j:
+                    cs[i,j] = -5
+                else:
+                    other_vec = self.historical_output_weights[other_model]
+                    other_vec = other_vec[inds]
+                    cs[i,j] = torch.nn.functional.cosine_similarity(cur_vec, other_vec, dim=0)
+
+        max_cs = np.max(cs, axis=1)
+
+        # Pardoning
+        for i, cur_model in enumerate(local_model_names):
+            vi = max_cs[i]
+            for j, other_model in enumerate(local_model_names):
+                vj = max_cs[j]
+                if vj > vi:
+                    cs[i,j] = vi/vj * cs[i,j]
+
+            lrs[i] = 1 - np.max(cs[i,:])
+
+        # Normalize learning rates
+        lrs = lrs/max(lrs)
+        # Element-wise logic function
+        lrs = [elementwise_logit(x, self.params["logit_confidence"]) for x in lrs]
+
+        # Weighted sum of local model delta
+        weight_accumulator = {}
+        for name, data in self.target_model.state_dict().items():
+            #pdb.set_trace()
+            weight_accumulator[name] = torch.zeros_like(data)
+            if len(data.shape) == 0:
+                continue
+            for i, model_name in enumerate(local_model_names):
+                weight_accumulator[name].add_(lrs[i] * self.local_models_weight_delta[model_name][name])
+
+        return weight_accumulator
 
     # Save global model
     def save_model(self, model=None, epoch=0, val_loss=0):
