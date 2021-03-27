@@ -243,6 +243,9 @@ class ImageHelper(Helper):
         self.test_data = self.get_test()
         self.poisoned_data_for_train = self.poison_dataset()
         self.test_data_poison = self.poison_test_dataset()
+        orig_input, orig_label = next(iter(self.test_data))
+        self.original_input = orig_input
+        self.original_label = orig_label
 
 
     # Prepare training data based on Dirichlet distribution

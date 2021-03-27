@@ -9,6 +9,7 @@ import time
 import random
 import pdb
 import cv2
+import copy
 
 import numpy as np
 import pandas as pd
@@ -26,6 +27,7 @@ from utils.text_load import *
 
 
 logger = logging.getLogger("logger")
+diff_input_logger = logging.getLogger("diff_input_logger")
 
 criterion = torch.nn.CrossEntropyLoss()
 
@@ -57,6 +59,8 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
     logger.info(f'There are {current_number_of_adversaries} adversaries in global epoch: {epoch}')
 
     local_global_dist_norms = []
+    helper.local_models_epoch = {}
+    helper.local_activations_epoch = {}
     ### Train the selected models
     for model_id in range(helper.params['no_models']):
         model = local_model
@@ -153,12 +157,15 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                                     poison_images_in_batch = random.sample(helper.params['poison_images'], n_backdoors)
                                     for pos, image in enumerate(poison_images_in_batch):
                                         poison_pos = n_backdoors*i + pos
-                                        batch[0][poison_pos] = helper.train_dataset[image][0]
+                                        #batch[0][poison_pos] = helper.train_dataset[image][0]
 
-                                        trigger_pattern = torch.zeros_like(batch[0][poison_pos])        ## fmnist <1, 28, 28>
-                                        trigger_pattern[:, -(helper.params['trigger_size']+1):-1, -(helper.params['trigger_size']+1):-1] = torch.ones((trigger_pattern.shape[0], helper.params['trigger_size'], helper.params['trigger_size']))
+                                        #trigger_pattern = torch.zeros_like(batch[0][poison_pos])        ## fmnist <1, 28, 28>
+                                        #trigger_pattern[:, -(helper.params['trigger_size']+1):-1, -(helper.params['trigger_size']+1):-1] = torch.ones((trigger_pattern.shape[0], helper.params['trigger_size'], helper.params['trigger_size']))
 
-                                        batch[0][poison_pos] = torch.clamp(batch[0][poison_pos].add_(trigger_pattern), min=-1., max=1.)
+                                        #batch[0][poison_pos] = torch.clamp(batch[0][poison_pos].add_(trigger_pattern), min=-1., max=1.)
+
+                                        poison_img = helper.train_dataset[image][0]
+                                        poison_img[:, -(helper.params['trigger_size']):, -(helper.params['trigger_size']):] = 1
                                         batch[1][poison_pos] = helper.params['poison_label_swap']
 
                         data, targets = helper.get_batch(poisoned_data, batch, False)
@@ -173,9 +180,13 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                             output = model(data)
                             class_loss = nn.functional.cross_entropy(output, targets)
 
-                        # all_model_distance = helper.model_dist_norm(target_model, target_params_variables)
-                        distance_loss = helper.model_dist_norm_var(model, target_params_variables)
+                        # Angular loss for FoolsGold
+                        if helper.params["global_model_aggregation"] == "foolsgold":
+                            distance_loss = helper.model_cosine_similarity(model, target_params_variables)
+                        else:
+                            distance_loss = helper.model_dist_norm_var(model, target_params_variables)
 
+                        #logger.info("class_loss: {}, distance_loss: {}".format(class_loss, distance_loss))
                         loss = helper.params['alpha_loss'] * class_loss + (1 - helper.params['alpha_loss']) * distance_loss
                         loss.backward()
 
@@ -207,7 +218,7 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                         else:
                             poison_optimizer.step()
 
-                    loss, acc = test(helper=helper, epoch=epoch, data_source=helper.test_data, model=model, is_poison=False, visualize=False)
+                    #loss, acc = test(helper=helper, epoch=epoch, data_source=helper.test_data, model=model, is_poison=False, visualize=False)
                     loss_p, acc_p = test_poison(helper=helper, epoch=internal_epoch, data_source=helper.test_data_poison, model=model, is_poison=True, visualize=False)
 
                     # If loss_p is low and accuracy on original data lowered, adjust step_lr
@@ -231,9 +242,11 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
             ### Adversary wants to scale his weights. Baseline model doesn't do this
             if not helper.params['baseline']:
                 ### We scale data according to formula: L = G + scale_weights*(X-G).
+                # Note that adversaries divide up the weight delta
                 clip_rate = (helper.params['scale_weights'] / current_number_of_adversaries)
                 logger.info(f"Scaling by  {clip_rate}")
-                for key, value in model.state_dict().items():
+                #for key, value in model.state_dict().items():
+                for key, value in dict(model.named_parameters()).items():
                     #### don't scale tied weights:
                     if helper.params.get('tied', False) and key == 'decoder.weight' or '__'in key:
                         continue
@@ -289,6 +302,11 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
             epoch_loss, epoch_acc = test(helper=helper, epoch=epoch, data_source=helper.test_data,
                              model=model, is_poison=True, visualize=False)
             # Save the adversary model
+            ## save model for the epoch
+            helper.local_models_epoch[current_data_model] = copy.deepcopy(model)
+            #data, targets = next(iter(helper.test_data)); data = data.cuda()
+            #activations = model(helper.original_input)
+            #helper.local_activations_epoch[current_data_model] = activations
             helper.save_local_model(model_id=current_data_model,model=model, epoch=epoch, val_loss=epoch_loss, val_acc=epoch_acc, adversary=True)
 
         #### Train a benign model    #####
@@ -361,6 +379,10 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
             epoch_loss, epoch_acc = test(helper=helper, epoch=epoch, data_source=helper.test_data,
                                          model=model, is_poison=False, visualize=False)
             # Save benign model
+            helper.local_models_epoch[current_data_model] = copy.deepcopy(model)
+            #data, targets = next(iter(helper.test_data)); data = data.cuda()
+            #activations = model(helper.original_input)
+            #helper.local_activations_epoch[current_data_model] = activations
             helper.save_local_model(model_id=current_data_model, model=model, epoch=epoch, val_loss=epoch_loss, val_acc=epoch_acc, adversary=False)
 
             if helper.params['track_distance'] and model_id < 10:
@@ -395,17 +417,20 @@ def train(helper, epoch, train_data_sets, local_model, target_model, is_poison):
                         p = mp_1d(data.cpu().reshape((1, 1, -1)))
                     arr = np.array(p)
                     pooled_array = np.append(pooled_array, arr)
-                else:
-                    pooled_array = np.append(pooled_array, data.cpu())
+
+        if not(helper.params["pool"]) or helper.params["global_model_aggregation"] == "foolsgold":
+            output_weights = torch.cat([model.state_dict()[x].view(-1) for x in helper.params["mad_layer_names"]])
+            pooled_array = np.array(output_weights.cpu())
 
         helper.pooled_arrays[current_data_model] = pooled_array
 
         # Foolsgold: Aggregate historical vector of the ouput layer
         if helper.params["global_model_aggregation"] == "foolsgold":
-            output_weights = torch.cat([model.state_dict()[x].view(-1) for x in helper.params["mad_layer_names"]])
-            helper.historical_output_weights[current_data_model] += output_weights
+            target_weights = torch.cat([target_model.state_dict()[x].view(-1) for x in helper.params["mad_layer_names"]])
+            helper.historical_output_weights[current_data_model] += (output_weights - target_weights)
 
     logger.info(f'Finish training all local clients.')
+
     if helper.params["fake_participants_save"]:
         torch.save(weight_accumulator,
                    f"{helper.params['fake_participants_file']}_"
@@ -579,6 +604,8 @@ if __name__ == '__main__':
     # Load train/test data
     helper.load_data()
     helper.create_model()
+    if helper.params["global_model_aggregation"] == "diff_input":
+        diff_input_logger.info("epoch, img, label, loss1, loss2, final_loss, outliers")
 
     # Decide the adversary list
     if helper.params['is_poison']:
@@ -677,7 +704,8 @@ if __name__ == '__main__':
         # Aggregate MAD inlier weight updates
         if helper.params["global_model_aggregation"] == "mad":
             logger.info("aggregate model updates with MAD outlier detection")
-            weight_accumulator2 = helper.accumulate_inliers_weight_delta()
+            #weight_accumulator2 = helper.accumulate_inliers_weight_delta()
+            weight_accumulator2 = helper.accumulate_inliers_weight_delta(ind_features=helper.params["mad_ind_features"])
             helper.average_shrink_models(target_model=helper.target_model,
                 weight_accumulator=weight_accumulator2, epoch=epoch)
         # Krum Aggregate
@@ -696,6 +724,13 @@ if __name__ == '__main__':
         if helper.params["global_model_aggregation"] == "foolsgold":
             logger.info("aggregate model updates with foolsgold")
             weight_accumulator2 = helper.foolsgold_aggregate()
+            helper.average_shrink_models(target_model=helper.target_model,
+                weight_accumulator=weight_accumulator2, epoch=epoch)
+
+        if helper.params["global_model_aggregation"] == "diff_input":
+            logger.info("aggregate model updates with diff input testing")
+            final_losses, outlier_counter = helper.generate_diff_imgs2(epoch)
+            weight_accumulator2 = helper.diff_input_aggregate2(final_losses, outlier_counter)
             helper.average_shrink_models(target_model=helper.target_model,
                 weight_accumulator=weight_accumulator2, epoch=epoch)
 
@@ -734,20 +769,21 @@ if __name__ == '__main__':
     ## Eval final attack success rate
     epoch_loss_p, epoch_acc_p = test_poison(helper=helper, epoch=epoch, data_source=helper.test_data_poison,
                                             model=helper.target_model, is_poison=True, visualize=True)
-    logger.info(f'Federated learning completed, attack success rate on final global model is {epoch_acc_p}.')
+    logger.info(f'Federated learning completed, FINAL global model attack success rate: {epoch_acc_p}.')
     epoch_loss, epoch_acc = test(helper=helper, epoch=epoch, data_source=helper.test_data,
                                  model=helper.target_model, is_poison=False, visualize=True)
-    logger.info(f'Test accuracy on benign test set of final global model is {epoch_acc}.')
+    logger.info(f'FINAL global model test accuracy on benign test set: {epoch_acc}.')
 
 
     if helper.params['is_poison']:
-        logger.info(f'MEAN_ACCURACY: {np.mean(mean_acc)}')
-    logger.info(f"This run has a label: {helper.params['current_time']}. ")
+        logger.info(f'MEAN global model attack success rate: {np.mean(mean_acc)}')
+        logger.info(f'MAX global model attack success rate: {np.max(mean_acc)}')
+    #logger.info(f"This run has a label: {helper.params['current_time']}. ")
 
     if helper.params["random_compromise"]:
         logger.info(f'poison_epochs: {helper.params["poison_epochs"]}')
 
-    logger.info(f"aggregation runtime: {helper.agg_runtime}")
+    logger.info(f"MEAN aggregation runtime: {np.mean(helper.agg_runtime)}")
 
     # Save evaluation number_of_total_participants
     if len(helper.false_positive_rate) > 0:
@@ -756,6 +792,11 @@ if __name__ == '__main__':
             helper.runtime, helper.agg_runtime)),
             columns =['global_accuracy', 'backdoor_accuracy', 'false_positive_rate', 'false_negative_rate',
                 "median_dist_to_global", "runtime", "agg_runtime"])
+        logger.info(f"SIFL: MEAN FPR: {np.mean(helper.false_positive_rate)}")
+        FNRs = helper.false_negative_rate
+        FNRs = [x for x in FNRs if x is not None]
+        if len(FNRs) > 0:
+            logger.info(f"SIFL: MEAN FNR: {np.mean(FNRs)}")
     else:
         df = pd.DataFrame(list(zip(helper.global_accuracy, helper.backdoor_accuracy,
             helper.median_distance_to_global, helper.runtime, helper.agg_runtime)),
@@ -764,6 +805,16 @@ if __name__ == '__main__':
 
     df2 = pd.DataFrame(helper.params["poison_epochs"])
     df2.to_csv("{}/poison_epochs.csv".format(helper.params['folder_path']))
+
+    if helper.params["global_model_aggregation"] == "foolsgold":
+        df3 = pd.DataFrame(list(zip(helper.adv_learning_rates, helper.benign_learning_rates)))
+        df3.to_csv("{}/fg_learning_rates.csv".format(helper.params['folder_path']))
+        logger.info(f"FG: MEAN learning rate of benign model: {np.mean(helper.benign_learning_rates)}")
+        adv_lrs = helper.adv_learning_rates
+        adv_lrs = [x for x in adv_lrs if x is not None]
+        if len(adv_lrs) > 0:
+            logger.info(f"FG: MEAN learning rate of adv model: {np.mean(adv_lrs)}")
+
 
     if helper.params.get('results_json', False):
         with open(helper.params['results_json'], 'a') as f:

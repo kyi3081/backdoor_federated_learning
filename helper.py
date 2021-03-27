@@ -1,8 +1,10 @@
+from collections import Counter
 from shutil import copyfile
 
 import math
 import torch
 import pdb
+from collections import defaultdict
 
 from torch.autograd import Variable
 import logging
@@ -10,10 +12,13 @@ import torch.nn as nn
 from torch.nn.functional import log_softmax
 import torch.nn.functional as F
 logger = logging.getLogger("logger")
+diff_input_logger = logging.getLogger("diff_input_logger")
+
 import os
 
 import numpy as np
 from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
 
 
 class Helper:
@@ -30,11 +35,18 @@ class Helper:
         self.params = params
         self.name = name
         self.best_loss = math.inf
-        experiment_name = "adv_{}_mo_{}_pt_{}_ppb_{}_tr_{}_e_{}_pe_{}_le_{}_sw_{}_alpha_{}_noniid_{}_agg_{}_dp_{}_snorm_{}_sigma_{}_pooling_{}".format(params["number_of_adversaries"],
+        experiment_name = "adv_{}_mo_{}_pt_{}_ppb_{}_tr_{}_e_{}_pe_{}_le_{}_sw_{}_alpha_{}_noniid_{}_agg_{}_dp_{}_snorm_{}_sigma_{}".format(params["number_of_adversaries"],
          params["no_models"], params["number_of_total_participants"], params["poisoning_per_batch"], params["trigger_size"],
          params["epochs"], params["poison_epochs"], params["retrain_no_times"], params["scale_weights"],
          params["alpha_loss"], params["sampling_dirichlet"],
-         params["global_model_aggregation"], params["diff_privacy"], params["s_norm"], params["sigma"], params["pool"])
+         params["global_model_aggregation"], params["diff_privacy"], params["s_norm"], params["sigma"])
+
+        if params["global_model_aggregation"] == "mad":
+            experiment_name = experiment_name + "_pool_{}_indfeat_{}_indratio_{}".format(params["pool"], params["mad_ind_features"],
+            params["ind_feature_ratio"])
+
+        if params["global_model_aggregation"] == "foolsgold":
+            experiment_name = experiment_name + "_indratio_{}".format(params["ind_feature_ratio"])
 
         self.folder_path = 'saved_models/{}_{}_{}'.format(params['dataset'], params['poison_type'], experiment_name)
 
@@ -46,6 +58,10 @@ class Helper:
         logger.addHandler(logging.StreamHandler())
         logger.setLevel(logging.DEBUG)
         logger.info(f'current path: {self.folder_path}')
+
+        diff_input_logger.addHandler(logging.FileHandler(filename=f'{self.folder_path}/diff_log.txt'))
+        diff_input_logger.setLevel(logging.INFO)
+
         if not self.params.get('environment_name', False):
             self.params['environment_name'] = self.name
 
@@ -66,8 +82,15 @@ class Helper:
         self.runtime = []
         self.agg_runtime = []
 
+        # helper variables for diff input testing
+        self.local_models_epoch = defaultdict()
+        self.local_activations_epoch = {}
+
         # Foolsgold: Historical weight vector of the output layer
         self.historical_output_weights = dict()
+        if self.params["global_model_aggregation"] == "foolsgold":
+            self.adv_learning_rates = []
+            self.benign_learning_rates = []
 
 
         if self.params["poison_epochs"] == "repeated" and self.params["random_compromise"] == False:
@@ -77,6 +100,18 @@ class Helper:
             self.params["poison_epochs"] = []
         # if self.params["poison_type"] == "pixel":
         #     self.assign_pixel_poison_images()
+
+    def setup_logger(self, log_name, log_file, level=logging.INFO):
+        """To setup as many loggers as you want"""
+        tmp_logger = logging.getLogger(log_name)
+        file_handler = logging.FileHandler(filename=f'{self.folder_path}/{log_file}.txt')
+        #file_handler.setLevel(logging.DEBUG)
+        tmp_logger.addHandler(file_handler)
+        tmp_logger.setLevel(logging.INFO)
+        #stream_handler = logging.StreamHandler()
+        #stream_handler.setLevel(logging.INFO)
+        #tmp_logger.addHandler(stream_handler)
+        return tmp_logger
 
     def save_checkpoint(self, state, is_best, filename='checkpoint.pth.tar'):
         if not self.params['save_model']:
@@ -175,25 +210,15 @@ class Helper:
         cs_list = list()
         cs_loss = torch.nn.CosineSimilarity(dim=0)
         for name, data in model.named_parameters():
-            if name == 'decoder.weight':
+            if name == 'decoder.weight' or len(data.shape) == 0:
                 continue
-
             model_update = 100*(data.view(-1) - target_params_variables[name].view(-1)) + target_params_variables[name].view(-1)
-
-
-            cs = F.cosine_similarity(model_update,
-                                     target_params_variables[name].view(-1), dim=0)
-            # logger.info(torch.equal(layer.view(-1),
-            #                          target_params_variables[name].view(-1)))
-            # logger.info(name)
-            # logger.info(cs.data[0])
-            # logger.info(torch.norm(model_update).data[0])
-            # logger.info(torch.norm(fake_weights[name]))
+            cs = F.cosine_similarity(model_update, target_params_variables[name].view(-1), dim=0)
             cs_list.append(cs)
-        cos_los_submit = 1*(1-sum(cs_list)/len(cs_list))
-        logger.info(model_id)
-        logger.info((sum(cs_list)/len(cs_list)).data[0])
-        return 1e3*sum(cos_los_submit)
+        cos_los_submit = 1-sum(cs_list)/len(cs_list)
+        # return 1e3*sum(cos_los_submit)
+        return 10*cos_los_submit
+
 
     def accum_similarity(self, last_acc, new_acc):
 
@@ -239,11 +264,8 @@ class Helper:
             if self.params.get('tied', False) and name == 'decoder.weight':
                 continue
 
-            if self.params["global_model_aggregation"] == "foolsgold":
-                update_per_layer = weight_accumulator[name]
-            else:
-                update_per_layer = weight_accumulator[name] * \
-                                   (self.params["eta"] / self.params["number_of_total_participants"])
+            update_per_layer = weight_accumulator[name] * \
+                               (self.params["eta"] / self.params["number_of_total_participants"])
 
             if self.params['diff_privacy']:
                 update_per_layer.add_(self.dp_noise(data, self.params['sigma']))
@@ -252,7 +274,7 @@ class Helper:
 
         return True
 
-    def accumulate_inliers_weight_delta(self):
+    def accumulate_inliers_weight_delta(self, ind_features=False):
         """
         Perform FedAvg algorithm after removing outliers
         """
@@ -281,12 +303,19 @@ class Helper:
         #         pooled_array = np.append(pooled_array, arr)
         #
         #     tmp[current_model] = pooled_array
-
         ####
+
         X = self.pooled_arrays.values()
         X = np.vstack(X)
         X = np.nan_to_num(X)
-        #pdb.set_trace()
+        if ind_features:
+            # Identify indicative features in the output layer (hard exclusiong)
+            target_output = torch.cat([self.target_model.state_dict()[x].view(-1) for x in self.params["mad_layer_names"]])
+            n_ind_features = int(self.params["ind_feature_ratio"] * len(target_output))
+            vals, inds = abs(target_output).topk(n_ind_features)
+            inds = np.array(inds.cpu())
+            X = X[:,inds]
+
         pca = PCA(n_components=1)
         p_pca = pca.fit_transform(X)
         # Dynamic thresholding based on global accuracy
@@ -398,6 +427,175 @@ class Helper:
 
         return True
 
+    def compute_diff_weighted_obj(self, epoch, input_img, lambda1=1, lambda2=0):
+        model_names = []
+        # Get activation values
+        model_acts = np.empty([0,10], dtype=float)
+        for name, model in self.local_models_epoch.items():
+            X = model(input_img).cpu().detach().numpy()
+            model_acts = np.vstack([model_acts, X])
+            model_names.append(name)
+
+        # Run K-means clustering on activation values
+        kmeans = KMeans(n_clusters=2, random_state=0).fit(model_acts)
+        kmean_labels = kmeans.labels_
+        one_inds = (np.where(kmean_labels == 1)[0]).tolist(); zero_inds = (np.where(kmean_labels == 0)[0]).tolist()
+        zero_inds = np.where(kmeans.labels_ == 0)[0]
+        one_models = [model_names[i] for i in one_inds]
+        zero_models = [model_names[i] for i in zero_inds]
+        one_acts = torch.stack([self.local_models_epoch[one_model](input_img) for one_model in one_models])
+        zero_acts = torch.stack([self.local_models_epoch[one_model](input_img) for one_model in zero_models])
+
+        # Compute the distance in the mean softmax distributions between two clusters
+        mean1 = torch.mean(one_acts, dim=0)
+        mean2 = torch.mean(zero_acts, dim=0)
+        loss1 = torch.cdist(mean1, mean2)
+
+        # Compute the variance within the clusters
+        loss2 = 0
+        if len(one_inds) > 1:
+            loss2 += torch.std(one_acts)
+        if len(zero_inds) > 1:
+            loss2 += torch.std(zero_acts)
+        loss = lambda1*loss1 - lambda2*loss2
+        one_models = [str(model_names[x]) for x in one_inds]; zero_models = [str(model_names[x]) for x in zero_inds];
+        outlier_models = one_models if len(one_inds) < len(zero_inds) else zero_models if len(one_inds) > len(zero_inds) else None
+        return(loss1, loss2, loss, outlier_models)
+
+    # TODO: hypertune n_iter and s
+    def generate_diff_imgs(self, epoch, n_iter = 20, s=0.5, lambda1=1, lambda2=0):
+        #img_list = []; orig_img_list = []
+        outlier_counter = defaultdict(list)
+        losses = []
+        for img_ind, seed in enumerate(self.original_input):
+            input_img = seed
+            input_label = self.original_label[img_ind]
+            orig_img = input_img.detach().clone().unsqueeze(0).cuda()
+            X = Variable(input_img, requires_grad=True).unsqueeze(0).cuda()
+
+            for _ in range(n_iter):
+                loss1, loss2, loss, outlier_models = self.compute_diff_weighted_obj(epoch, X, lambda1, lambda2)
+                X.retain_grad()  ## check on this: why is this necessary?
+                loss.backward()
+                X.data += s*X.grad
+                X.grad.zero_()
+
+            X = X.detach()
+            if outlier_models is not None:
+                outlier_model_str = ",".join(outlier_models)
+                diff_input_logger.info("{}, {}, {}, {}, {}, {}, {}".format(epoch, img_ind, input_label, round(loss1.item(),2),
+                round(loss2.item(),2), round(loss.item(),2), outlier_model_str))
+                final_loss = loss.item()
+                losses.append(final_loss)
+                outlier_counter[final_loss] = outlier_models
+
+        return(losses, outlier_counter)
+
+    def diff_input_aggregate(self, losses, outlier_counter):
+        # Based on the occurrence of outlier membership
+        def mad_detect_outliers(dict, th=3):
+            local_model_names = list(dict.keys())
+            dict_vals = list(dict.values())
+            med = np.median(dict_vals)
+            abs_med_diff = abs(dict_vals-med)
+            mad = np.median(abs_med_diff)
+            mad_dist = abs_med_diff/mad
+            outlier = [local_model_names[i] for i in range(len(mad_dist)) if mad_dist[i] > th]
+            return outlier
+        local_model_names = list(self.local_models_weight_delta.keys())
+        median_loss = np.median(losses)
+        outlier_counter = dict(Counter(int(v) for k, sublist in outlier_counter.items() for v in sublist if k > median_loss))
+        inliers = set(local_model_names).difference(set(outlier_counter))
+        for k in inliers:
+            outlier_counter[k] = 0
+        outliers = set(mad_detect_outliers(outlier_counter))
+        inliers = set(local_model_names).difference(outliers)
+
+        adversaries = set(self.params['adversary_list'])
+        tp = len(outliers.intersection(adversaries)) # true positives
+        fp = len(outliers) - tp  # false positives
+        fn = len(inliers.intersection(adversaries)) # false negatives
+        tn = len(inliers) - fn  # true negatives
+        fpr = fp/(fp + tn) if (fp + tn) > 0 else None
+        fnr = fn/(fn + tp) if (fn + tp) > 0 else None
+        self.false_positive_rate.append(fpr)
+        self.false_negative_rate.append(fnr)
+        logger.info("## fpr: {}, fnr: {}".format(fpr, fnr))
+
+        weight_accumulator = {}
+        for name, data in self.target_model.state_dict().items():
+            weight_accumulator[name] = torch.zeros_like(data)
+            for inlier in inliers:
+                weight_accumulator[name].add_(self.local_models_weight_delta[inlier][name])
+        return weight_accumulator
+
+    def generate_diff_imgs2(self, epoch, n_iter = 20, s=0.5, lambda1=1, lambda2=0):
+        #img_list = []; orig_img_list = []
+        outlier_counter = defaultdict(list)
+        losses = []
+        for img_ind, seed in enumerate(self.original_input):
+            input_img = seed
+            input_label = self.original_label[img_ind]
+            orig_img = input_img.detach().clone().unsqueeze(0).cuda()
+            X = Variable(input_img, requires_grad=True).unsqueeze(0).cuda()
+
+            for _ in range(n_iter):
+                loss1, loss2, loss, outlier_models = self.compute_diff_weighted_obj(epoch, X, lambda1, lambda2)
+                X.retain_grad()  ## check on this: why is this necessary?
+                loss.backward()
+                X.data += s*X.grad
+                X.grad.zero_()
+
+            X = X.detach()
+            if outlier_models is not None:
+                outlier_model_str = ",".join(outlier_models)
+                diff_input_logger.info("{}, {}, {}, {}, {}, {}, {}".format(epoch, img_ind, input_label, round(loss1.item(),2),
+                round(loss2.item(),2), round(loss.item(),2), outlier_model_str))
+                final_loss = loss.item()
+                losses.append(final_loss)
+                for model in outlier_models:
+                    outlier_counter[model].append(final_loss)
+
+        return(losses, outlier_counter)
+
+    def diff_input_aggregate2(self, losses, outlier_counter):
+        # Based on the occurrence of outlier membership
+        def mad_detect_outliers(dict, th=3):
+            local_model_names = list(dict.keys())
+            dict_vals = list(dict.values())
+            med = np.median(dict_vals)
+            abs_med_diff = abs(dict_vals-med)
+            mad = np.median(abs_med_diff)
+            mad = mad if abs(mad) > 0 else 1e-9
+            mad_dist = abs_med_diff/mad
+            outlier = [local_model_names[i] for i in range(len(mad_dist)) if mad_dist[i] > th]
+            return outlier
+        local_model_names = list(self.local_models_weight_delta.keys())
+        outlier_counter = {int(k): np.mean(v) for k, v in outlier_counter.items()}
+        inliers = set(local_model_names).difference(set(outlier_counter))
+        for k in inliers:
+            outlier_counter[k] = 0
+        outliers = set(mad_detect_outliers(outlier_counter))
+        inliers = set(local_model_names).difference(outliers)
+
+        adversaries = set(self.params['adversary_list'])
+        tp = len(outliers.intersection(adversaries)) # true positives
+        fp = len(outliers) - tp  # false positives
+        fn = len(inliers.intersection(adversaries)) # false negatives
+        tn = len(inliers) - fn  # true negatives
+        fpr = fp/(fp + tn) if (fp + tn) > 0 else None
+        fnr = fn/(fn + tp) if (fn + tp) > 0 else None
+        self.false_positive_rate.append(fpr)
+        self.false_negative_rate.append(fnr)
+        logger.info("## fpr: {}, fnr: {}".format(fpr, fnr))
+
+        weight_accumulator = {}
+        for name, data in self.target_model.state_dict().items():
+            weight_accumulator[name] = torch.zeros_like(data)
+            for inlier in inliers:
+                weight_accumulator[name].add_(self.local_models_weight_delta[inlier][name])
+        return weight_accumulator
+
     def foolsgold_aggregate(self):
 
         def elementwise_logit(x, confidence_param):
@@ -415,6 +613,7 @@ class Helper:
         for i, cur_model in enumerate(local_model_names):
             cur_vec = self.historical_output_weights[cur_model]
             cur_vec = cur_vec[inds]
+            #logger.info("!!!! cur model: {}, cur vec shape: {}".format(cur_model, cur_vec.shape))
             #other_model_names = list(set(local_model_names) - set(cur_model))
             for j, other_model in enumerate(local_model_names):
                 if i==j:
@@ -422,7 +621,7 @@ class Helper:
                 else:
                     other_vec = self.historical_output_weights[other_model]
                     other_vec = other_vec[inds]
-                    cs[i,j] = torch.nn.functional.cosine_similarity(cur_vec, other_vec, dim=0)
+                    cs[i,j] = torch.nn.functional.cosine_similarity(cur_vec, other_vec, dim=0).cpu().tolist()
 
         max_cs = np.max(cs, axis=1)
 
@@ -440,7 +639,6 @@ class Helper:
         lrs = lrs/max(lrs)
         # Element-wise logic function
         lrs = [elementwise_logit(x, self.params["logit_confidence"]) for x in lrs]
-
         # Weighted sum of local model delta
         weight_accumulator = {}
         for name, data in self.target_model.state_dict().items():
@@ -451,27 +649,38 @@ class Helper:
             for i, model_name in enumerate(local_model_names):
                 weight_accumulator[name].add_(lrs[i] * self.local_models_weight_delta[model_name][name])
 
+        # Save avg learning rate for adv and benign models
+        adv_lrs = [lrs[x] for x in np.arange(len(lrs)) if local_model_names[x] in self.params["adversary_list"]]
+        benign_lrs = [lrs[x] for x in np.arange(len(lrs)) if local_model_names[x] not in self.params["adversary_list"]]
+        logger.info("FG: learning rates of adversaries: ".format(adv_lrs))
+        logger.info("FG: learning rates of benign models: ".format(benign_lrs))
+        #pdb.set_trace()
+        if len(adv_lrs) > 0:
+            self.adv_learning_rates.append(np.mean(adv_lrs))
+        if len(benign_lrs) > 0:
+            self.benign_learning_rates.append(np.mean(benign_lrs))
+
         return weight_accumulator
 
     # Save global model
     def save_model(self, model=None, epoch=0, val_loss=0):
         if model is None:
             model = self.target_model
-        if self.params['save_model']:
+
+        poison_epochs = self.params['poison_epochs']
+        save_epochs = self.params['save_on_epochs'] + poison_epochs + [x-1 for x in poison_epochs] + [x+1 for x in poison_epochs]
+        save_epochs = list(set(save_epochs))
+
+        if self.params['save_model'] and epoch in save_epochs:
             # save_model
             logger.info("saving model")
             model_name = '{}/global_model_epoch_{}.pt.tar'.format(self.params['folder_path'], epoch)
             saved_dict = {'state_dict': model.state_dict(), 'epoch': epoch,
                           'lr': self.params['lr']}
-            self.save_checkpoint(saved_dict, False, model_name)
+            #self.save_checkpoint(saved_dict, False, model_name)
             # By default, we save models during poison epochs, epochs right before/after poison epochs
-            poison_epochs = self.params['poison_epochs']
-            save_epochs = self.params['save_on_epochs'] + poison_epochs + [x-1 for x in poison_epochs] + [x+1 for x in poison_epochs]
-            save_epochs = list(set(save_epochs))
-
-            if epoch in save_epochs:
-                logger.info(f'Saving model on epoch {epoch}')
-                self.save_checkpoint(saved_dict, False, filename=f'{model_name}')
+            logger.info(f'Saving model on epoch {epoch}')
+            self.save_checkpoint(saved_dict, False, filename=f'{model_name}')
             if val_loss < self.best_loss:
                 self.save_checkpoint(saved_dict, False, f'{model_name}.best')
                 self.best_loss = val_loss
